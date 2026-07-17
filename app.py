@@ -79,8 +79,8 @@ def ask_ai_chat(api_key, model_name, messages):
 
 # --- ИНИЦИАЛИЗАЦИЯ СЕССИИ И НАСТРОЕК ---
 
-# Жестко фиксируем модель DeepSeek-R1 по умолчанию
-MODEL_NAME = "deepseek/deepseek-r1:free"
+# Жестко фиксируем модель gemini-2.5-flash по умолчанию
+MODEL_NAME = "google/gemini-2.5-flash"
 
 # Берем скрытый API-ключ из настроек Secrets хостинга
 API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")

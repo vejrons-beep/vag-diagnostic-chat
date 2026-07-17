@@ -66,6 +66,7 @@ def ask_ai_chat(api_key, model_name, messages):
     data = {
         "model": model_name,
         "messages": messages
+        "max_tokens": 4000
     }
     
     try:

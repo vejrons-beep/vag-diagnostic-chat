@@ -60,7 +60,7 @@ def ask_ai_chat(api_key, model_name, messages):
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://huggingface.co/spaces", 
+        "HTTP-Referer": "https://share.streamlit.io", 
     }
     
     data = {
@@ -77,9 +77,14 @@ def ask_ai_chat(api_key, model_name, messages):
     except Exception as e:
         return f"Ошибка сети: {e}"
 
-# --- ИНИЦИАЛИЗАЦИЯ СЕССИИ ---
+# --- ИНИЦИАЛИЗАЦИЯ СЕССИИ И НАСТРОЕК ---
 
-# Системный промпт, задающий роль ИИ
+# Жестко фиксируем модель DeepSeek-R1 по умолчанию
+MODEL_NAME = "deepseek/deepseek-r1:free"
+
+# Берем скрытый API-ключ из настроек Secrets хостинга
+API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
+
 SYSTEM_PROMPT = (
     "Ты — профессиональный автодиагност концерна VAG. Твоя задача — помочь владельцу локализовать проблему с машиной в формате чата.\n\n"
     "ПРАВИЛА ОТВЕТОВ:\n"
@@ -100,20 +105,12 @@ if "chat_history" not in st.session_state:
 if "vin_code" not in st.session_state:
     st.session_state.vin_code = ""
 
-# --- БОКОВАЯ ПАНЕЛЬ (НАСТРОЙКИ И ФАЙЛЫ) ---
+# --- БОКОВАЯ ПАНЕЛЬ (ОЧИЩЕННАЯ) ---
 
 with st.sidebar:
     st.header("⚙️ Панель управления")
     
-    saved_key = st.secrets.get("OPENROUTER_API_KEY", "")
-    api_key = st.text_input("OpenRouter API Key", value=saved_key, type="password")
-    
-    model_option = st.selectbox(
-        "Модель ИИ",
-        options=["deepseek/deepseek-r1:free", "deepseek/deepseek-chat", "google/gemini-2.5-flash"],
-        index=0
-    )
-    
+    # Поле VIN-кода оставляем для удобства
     vin_input = st.text_input("VIN-код автомобиля", value=st.session_state.vin_code, max_chars=17)
     if vin_input:
         st.session_state.vin_code = vin_input.upper()
@@ -126,7 +123,6 @@ with st.sidebar:
 
 log_df = None
 if uploaded_file is not None:
-    # Парсим лог
     log_df, extracted_vin = safe_parse_log(uploaded_file)
     if extracted_vin and extracted_vin != st.session_state.vin_code:
         st.session_state.vin_code = extracted_vin
@@ -136,16 +132,15 @@ if uploaded_file is not None:
 
 st.title("VAG Expert Chat 💬")
 
-# Отображение истории чата (кроме скрытого системного промпта)
+# Отображение истории чата
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
 
-# Если лог загружен, выводим график и кнопку прямо в ленту чата
+# Если лог загружен, выводим график и кнопку в чат
 if log_df is not None and not log_df.empty:
     st.info("📊 Лог-файл успешно загружен в систему.")
     
-    # Строим график прямо внутри чата
     rpm_cols = [c for c in log_df.columns if any(x in c.lower() for x in ["обороты", "rpm", "speed"])]
     map_cols = [c for c in log_df.columns if any(x in c.lower() for x in ["давлен", "map", "pressure"])]
     
@@ -157,14 +152,11 @@ if log_df is not None and not log_df.empty:
                           template="plotly_dark")
             st.plotly_chart(fig, use_container_width=True)
             
-    # Кнопка для отправки лога на анализ
     if st.button("🚀 Отправить лог на анализ ИИ"):
-        if not api_key:
-            st.error("Добавь API-ключ в левой панели!")
+        if not API_KEY:
+            st.error("Ошибка: API-ключ не найден в настройках хостинга Secrets!")
         else:
             csv_str = log_df.to_csv(index=False)
-            
-            # Добавляем контекст в историю для ИИ
             system_msg = f"Пользователь загрузил лог-файл. "
             if st.session_state.vin_code:
                 system_msg += f"VIN автомобиля: {st.session_state.vin_code}. "
@@ -173,10 +165,9 @@ if log_df is not None and not log_df.empty:
             st.session_state.messages.append({"role": "user", "content": system_msg})
             st.session_state.chat_history.append({"role": "user", "content": "📎 [Файл лога отправлен на анализ]"})
             
-            # Показываем анимацию загрузки
             with st.chat_message("assistant"):
-                with st.spinner("Анализирую параметры лога..."):
-                    response = ask_ai_chat(api_key, model_option, st.session_state.messages)
+                with st.spinner("DeepSeek-R1 анализирует параметры лога..."):
+                    response = ask_ai_chat(API_KEY, MODEL_NAME, st.session_state.messages)
                     st.write(response)
                     
             st.session_state.messages.append({"role": "assistant", "content": response})
@@ -186,26 +177,23 @@ if log_df is not None and not log_df.empty:
 # --- ВВОД НОВОГО СООБЩЕНИЯ В ЧАТ ---
 
 if user_input := st.chat_input("Напишите симптомы или задайте вопрос..."):
-    if not api_key:
-        st.error("Пожалуйста, сначала введите API-ключ в левой панели!")
+    if not API_KEY:
+        st.error("Ошибка: API-ключ не найден в настройках хостинга Secrets!")
     else:
-        # Отображаем сообщение пользователя в чате
         with st.chat_message("user"):
             st.write(user_input)
             
         st.session_state.chat_history.append({"role": "user", "content": user_input})
         
-        # Подготавливаем сообщение для ИИ (включая VIN, если он есть)
         ai_payload = user_input
         if st.session_state.vin_code and len(st.session_state.messages) == 1:
             ai_payload = f"Мой VIN: {st.session_state.vin_code}. " + ai_payload
             
         st.session_state.messages.append({"role": "user", "content": ai_payload})
         
-        # Запрос к модели
         with st.chat_message("assistant"):
-            with st.spinner("Думаю..."):
-                response = ask_ai_chat(api_key, model_option, st.session_state.messages)
+            with st.spinner("DeepSeek-R1 думает..."):
+                response = ask_ai_chat(API_KEY, MODEL_NAME, st.session_state.messages)
                 st.write(response)
                 
         st.session_state.messages.append({"role": "assistant", "content": response})

@@ -306,7 +306,10 @@ if uploaded_vin_img is not None:
         except Exception as e:
             st.sidebar.error(f"Ошибка сканирования: {e}")
 
-# Виджет загрузки фото VIN-кода
+# Инициализируем переменную по умолчанию
+uploaded_vin_img = None
+
+# Виджет загрузки фото VIN-кода (показываем только если easyocr доступен)
 if easyocr:
     uploaded_vin_img = st.sidebar.file_uploader(
         "📷 Сканировать VIN по фото (СТТС, кузов)", 
@@ -314,36 +317,36 @@ if easyocr:
         key="vin_image_uploader"
     )
     
-    # Храним имя последнего обработанного файла, чтобы не распознавать его по кругу
-    if "last_processed_vin_img" not in st.session_state:
-        st.session_state.last_processed_vin_img = None
+# Храним имя последнего обработанного файла, чтобы не распознавать его по кругу
+if "last_processed_vin_img" not in st.session_state:
+    st.session_state.last_processed_vin_img = None
 
-    if uploaded_vin_img is not None:
-        # Проверяем, изменился ли файл (или это первая загрузка)
-        if uploaded_vin_img.name != st.session_state.last_processed_vin_img:
-            try:
-                with st.spinner("Распознаю VIN-код с фотографии..."):
-                    image = Image.open(uploaded_vin_img)
-                    img_np = np.array(image)
-                    reader = get_ocr_reader()
-                    result = reader.readtext(img_np, detail=0)
-                    
-                    full_text = "".join(result).replace(" ", "")
-                    found_vin = extract_vin(full_text)
-                    
-                    if found_vin:
-                        st.session_state.vin_code = found_vin
-                        # Запоминаем имя файла, чтобы не обрабатывать повторно
-                        st.session_state.last_processed_vin_img = uploaded_vin_img.name
-                        st.rerun()
-                    else:
-                        st.sidebar.error("❌ Не удалось четко распознать 17-значный VIN. Попробуйте другое фото или введите вручную.")
-            except Exception as e:
-                st.sidebar.error(f"Ошибка сканирования: {e}")
+# ВОТ ЗДЕСЬ код больше не упадет, так как переменная гарантированно существует
+if uploaded_vin_img is not None:
+    if uploaded_vin_img.name != st.session_state.last_processed_vin_img:
+        try:
+            with st.spinner("Распознаю VIN-код с фотографии..."):
+                image = Image.open(uploaded_vin_img)
+                img_np = np.array(image)
+                reader = get_ocr_reader()
+                result = reader.readtext(img_np, detail=0)
                 
-    # Если файл удалили из виджета, сбрасываем метку
-    elif uploaded_vin_img is None and st.session_state.last_processed_vin_img is not None:
-        st.session_state.last_processed_vin_img = None
+                # Соединяем ВСЕ строки с картинки в одну сплошную массу для поиска
+                full_text = "".join(result)
+                found_vin = extract_vin(full_text)
+                
+                if found_vin:
+                    st.session_state.vin_code = found_vin
+                    st.session_state.last_processed_vin_img = uploaded_vin_img.name
+                    st.rerun()
+                else:
+                    st.sidebar.error("❌ Не удалось четко распознать 17-значный VIN. Попробуйте сделать фото ближе, при более ровном свете или введите вручную.")
+        except Exception as e:
+            st.sidebar.error(f"Ошибка сканирования: {e}")
+            
+# Если файл удалили из виджета, сбрасываем метку
+elif uploaded_vin_img is None and st.session_state.last_processed_vin_img is not None:
+    st.session_state.last_processed_vin_img = None
 
 # Поле ручного ввода VIN-кода
 vin_input = st.sidebar.text_input(

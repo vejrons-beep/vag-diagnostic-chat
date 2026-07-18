@@ -272,7 +272,7 @@ with st.sidebar:
 
     uploaded_vin_img = None
     if easyocr:
-        uploaded_vin_img = st.sidebar.file_uploader(
+        uploaded_vin_img = st.file_uploader(
             "📷 Сканировать VIN по фото (СТТС, кузов)", 
             type=["jpg", "jpeg", "png"],
             key="vin_image_uploader"
@@ -298,13 +298,13 @@ with st.sidebar:
                         st.session_state.last_processed_vin_img = uploaded_vin_img.name
                         st.rerun()
                     else:
-                        st.sidebar.error("❌ Не удалось четко распознать 17-значный VIN. Попробуйте другое фото или введите вручную.")
+                        st.error("❌ Не удалось четко распознать 17-значный VIN. Попробуйте другое фото или введите вручную.")
             except Exception as e:
-                st.sidebar.error(f"Ошибка сканирования: {e}")
+                st.error(f"Ошибка сканирования: {e}")
     elif uploaded_vin_img is None and st.session_state.last_processed_vin_img is not None:
         st.session_state.last_processed_vin_img = None
 
-    vin_input = st.sidebar.text_input(
+    vin_input = st.text_input(
         "Ввести VIN-код вручную:", 
         value=st.session_state.vin_code,
         max_chars=17
@@ -313,7 +313,7 @@ with st.sidebar:
     if vin_input != st.session_state.vin_code:
         st.session_state.vin_code = vin_input.upper()
 
-    st.sidebar.markdown("---")
+    st.markdown("---")
     
     if st.button("🗑️ Очистить всю историю чата"):
         st.session_state.chat_history = [
@@ -325,6 +325,7 @@ with st.sidebar:
         clear_history_on_disk()
         st.rerun()
 
+# --- ЗДЕСЬ БОКОВАЯ ПАНЕЛЬ ЗАКОНЧИЛАСЬ. КОД НИЖЕ ВЫВОДИТСЯ ПО ЦЕНТРУ ---
 # --- ОСНОВНАЯ ПАНЕЛЬ ЗАГРУЗКИ ДАННЫХ ---
 st.title("VAG Expert Chat + Vision 💬")
 

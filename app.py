@@ -299,15 +299,17 @@ with st.sidebar:
     if vin_input != st.session_state.vin_code:
         st.session_state.vin_code = vin_input.upper()
 
-    # --- МОДИФИКАЦИИ ---
+  # --- МОДИФИКАЦИИ ---
     st.markdown("---")
     st.subheader("🔧 Модификации автомобиля")
     is_tuned = st.checkbox("⚙️ Чип-тюнинг")
     is_decatted = st.checkbox("💨 Удален катализатор")
+    is_lpg = st.checkbox("🔥 Установлено ГБО") # Новая галочка
     
     st.session_state.mods = {
         "tuned": is_tuned,
-        "decatted": is_decatted
+        "decatted": is_decatted,
+        "lpg": is_lpg
     }
 
     st.markdown("---")
@@ -478,10 +480,11 @@ if user_input := st.chat_input("Напишите симптомы или зад�
             st.write(user_input)
             
         # Считываем галочки модификаций
-        mods = st.session_state.get("mods", {"tuned": False, "decatted": False})
+        mods = st.session_state.get("mods", {"tuned": False, "decatted": False, "lpg": False})
         mods_list = []
         if mods["tuned"]: mods_list.append("Сделан Чип-тюнинг")
         if mods["decatted"]: mods_list.append("Удален катализатор")
+        if mods["lpg"]: mods_list.append("Установлено ГБО")
         mods_str = ", ".join(mods_list) if mods_list else "Сток (без модификаций)"
             
         # Формируем скрытый payload для ИИ с VIN и модификациями

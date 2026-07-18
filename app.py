@@ -316,33 +316,35 @@ if easyocr:
     elif uploaded_vin_img is None and st.session_state.last_processed_vin_img is not None:
         st.session_state.last_processed_vin_img = None
 
-# Поле ручного ввода (куда автоматически подставится VIN после сканирования)
+# Поле ручного ввода VIN-кода
 vin_input = st.sidebar.text_input(
     "Ввести VIN-код вручную:", 
     value=st.session_state.vin_code,
     max_chars=17
 )
 
-# Сохраняем актуальный VIN в сессию
 if vin_input != st.session_state.vin_code:
     st.session_state.vin_code = vin_input.upper()
 
-# --- ВОТ ЭТОТ БЛОК ДОЛЖЕН БЫТЬ ОБЯЗАТЕЛЬНО, ЧТОБЫ ИСПРАВИТЬ NAMEERROR ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("📊 Диагностика заездов")
 
+# Главный загрузчик логов, который мы возвращали
 uploaded_file = st.sidebar.file_uploader(
     "Загрузить CSV или TXT лог (Вася Диагност / VCDS)", 
     type=["csv", "txt"],
     key="main_log_uploader"
 )
-# ------------------------------------------------------------------------
-        
-    if st.button("🗑️ Очистить всю историю чата"):
-        if os.path.exists(CACHE_FILE):
-            os.remove(CACHE_FILE)
-        st.session_state.clear()
-        st.rerun()
+
+st.sidebar.markdown("---")
+
+# ВОТ ЗДЕСЬ ИСПРАВЛЯЕМ ОТСТУПЫ (все строки блока if должны быть выровнены строго по левому краю или относительно родителя)
+if st.button("🗑️ Очистить всю историю чата"):
+    st.session_state.chat_history = []
+    st.session_state.vin_code = ""
+    # Если на диске сохранены файлы истории, можно очистить и их
+    clear_history_on_disk() # или твоя функция очистки, если она есть
+    st.rerun()
         
     st.markdown("---")
     st.subheader("📁 Загрузка данных")

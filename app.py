@@ -302,8 +302,8 @@ with st.sidebar:
     # --- МОДИФИКАЦИИ ---
     st.markdown("---")
     st.subheader("🔧 Модификации автомобиля")
-    is_tuned = st.checkbox("⚙️ Чип-тюнинг (Stage 1/2/3)")
-    is_decatted = st.checkbox("💨 Удален катализатор (Декат)")
+    is_tuned = st.checkbox("⚙️ Чип-тюнинг")
+    is_decatted = st.checkbox("💨 Удален катализатор")
     
     st.session_state.mods = {
         "tuned": is_tuned,

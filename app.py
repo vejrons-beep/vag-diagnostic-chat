@@ -291,7 +291,7 @@ with st.sidebar:
 
     # Оставляем только прямое ручное введение VIN-кода
     vin_input = st.text_input(
-        "Ввести VIN-код вручную:", 
+        "Ввести VIN-код:", 
         value=st.session_state.vin_code,
         max_chars=17
     )

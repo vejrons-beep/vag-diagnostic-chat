@@ -1,0 +1,7 @@
+[server]
+enableCORS = false
+enableXsrfProtection = false
+websocketMaxMessageSize = 200
+
+[browser]
+gatherUsageStats = false

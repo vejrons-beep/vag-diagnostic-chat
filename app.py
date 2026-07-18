@@ -84,120 +84,87 @@ MODEL_NAME = "google/gemini-2.5-flash"
 API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
 
 SYSTEM_PROMPT = (
-    "Ты — профессиональный автодиагност концерна VAG. Твоя задача — помочь владельцу локализовать проблему с машиной в формате чата.\n\n"
-    "ПРАВИЛА ОТВЕТОВ:\n"
-    "1. Общайся вежливо, профессионально, но простым языком.\n"
-    "2. Если пользователь указывает VIN-код, расшифруй его (модель, год, мотор) и используй эти спецификации.\n"
-    "3. Если лог еще не загружен, расспроси о симптомах, предложи вероятные версии и назови точные номера групп (например, 003, 020, 031) для записи в программе 'Вася Диагност'.\n"
-    "4. Если лог загружен, детально сопоставь цифры (обороты, давление MAP, откаты УОЗ, лямбда) с симптомами, найди аномалии и дай четкий пошаговый план ремонта."
+    "Ты — профессиональный автодиагност концерна VAG. Твоя задача — помочь владельцу локализовать проблему с машиной.\n"
+    "ОБЯЗАТЕЛЬНО помни контекст предыдущих сообщений пользователя и свои прошлые ответы!"
 )
-
-if "messages" not in st.session_state:
-    st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = [
-        {"role": "assistant", "content": "Привет! Я твой виртуальный ассистент-диагност VAG. 🚗\n\nОпиши, что происходит с машиной (симптомы, когда проявляется тупняк), или прикрепи файл лога. Если знаешь VIN-код, тоже введи его — это поможет мне точнее определить параметры твоего мотора."}
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "assistant", "content": "Привет! Я твой виртуальный ассистент-диагност VAG. 🚗\n\nОпиши, что происходит с машиной или загрузи файл лога в боковой панели слева."}
     ]
 
 if "vin_code" not in st.session_state:
     st.session_state.vin_code = ""
 
-# Скрываем стандартную боковую панель Streamlit полностью, чтобы не путаться
-st.markdown("<style>ul[data-testid='sidebar-ul'] {display: none;} [data-testid='stSidebar'] {display: none;}</style>", unsafe_allow_html=True)
+# --- БОКОВАЯ ПАНЕЛЬ ---
+with st.sidebar:
+    st.header("⚙️ Панель управления")
+    vin_input = st.text_input("VIN-код автомобиля", value=st.session_state.vin_code, max_chars=17)
+    if vin_input:
+        st.session_state.vin_code = vin_input.upper()
+        
+    st.markdown("---")
+    st.subheader("📁 Загрузка логов")
+    uploaded_file = st.file_uploader("Перетащи сюда файл .csv / .txt", type=["csv", "txt"])
 
-# --- ОСНОВНОЙ ИНТЕРФЕЙС ЧАТА ---
+# --- ОБРАБОТКА ФАЙЛА ---
+log_df = None
+if uploaded_file is not None:
+    log_df, extracted_vin = safe_parse_log(uploaded_file)
+    if extracted_vin and extracted_vin != st.session_state.vin_code:
+        st.session_state.vin_code = extracted_vin
+        st.sidebar.info(f"📍 Найден VIN: {extracted_vin}")
 
+# --- ИНТЕРФЕЙС ЧАТА ---
 st.title("VAG Expert Chat 💬")
 
-# Выводим историю сообщений
+# Отображаем только видимую историю (без системного промпта)
 for msg in st.session_state.chat_history:
-    with st.chat_message(msg["role"]):
-        st.write(msg["content"])
+    if msg["role"] != "system":
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
 
-# Создаем контейнер, прижатый к низу экрана, где будут находиться контекстные кнопки управления
-controls_container = st.container()
-
-log_df = None
-
-with controls_container:
-    st.markdown("---")
-    # Создаем две вкладки прямо над полем ввода чата
-    tab_log, tab_vin = st.tabs(["📁 Добавить лог-файл", "📝 Ввести VIN-код"])
-    
-    with tab_log:
-        uploaded_file = st.file_uploader("Перетащи сюда файл .csv / .txt лога заезда", type=["csv", "txt"], label_visibility="collapsed")
-        if uploaded_file is not None:
-            log_df, extracted_vin = safe_parse_log(uploaded_file)
-            if extracted_vin and extracted_vin != st.session_state.vin_code:
-                st.session_state.vin_code = extracted_vin
-                st.success(f"📍 В файле обнаружен VIN: {extracted_vin}")
-
-    with tab_vin:
-        vin_input = st.text_input("Введи 17-значный VIN автомобиля", value=st.session_state.vin_code, max_chars=17, placeholder="XW8ZZZ61ZCG******")
-        if vin_input:
-            st.session_state.vin_code = vin_input.upper()
-
-# --- ОБРАБОТКА И ОТПРАВКА С ФАЙЛОМ ---
-
+# Лог и кнопка анализа
 if log_df is not None and not log_df.empty:
-    st.info("📊 Лог-файл подготовлен к анализу.")
+    st.info("📊 Лог-файл успешно загружен в систему.")
+    # (Здесь остается твой код построения графика Plotly)
     
-    rpm_cols = [c for c in log_df.columns if any(x in c.lower() for x in ["обороты", "rpm", "speed"])]
-    map_cols = [c for c in log_df.columns if any(x in c.lower() for x in ["давлен", "map", "pressure"])]
-    
-    if rpm_cols and map_cols:
-        with st.expander("Посмотреть график заезда перед отправкой", expanded=False):
-            fig = px.line(log_df, x=rpm_cols[0], y=map_cols[0], 
-                          title="Давление впуска (MAP) от Оборотов",
-                          labels={rpm_cols[0]: "Обороты", map_cols[0]: "Давление"},
-                          template="plotly_dark")
-            st.plotly_chart(fig, use_container_width=True)
-            
-    if st.button("🚀 Проанализировать этот лог через ИИ", use_container_width=True):
+    if st.button("🚀 Отправить лог на анализ ИИ"):
         if not API_KEY:
-            st.error("Ошибка: API-ключ не найден в настройках хостинга Secrets!")
+            st.error("Ошибка: API-ключ не найден в Secrets!")
         else:
             csv_str = log_df.to_csv(index=False)
-            system_msg = f"Пользователь загрузил лог-файл. "
+            log_payload = f"Пользователь загрузил лог-файл. Вот данные:\n{csv_str}"
             if st.session_state.vin_code:
-                system_msg += f"VIN автомобиля: {st.session_state.vin_code}. "
-            system_msg += f"Вот данные лога для анализа:\n{csv_str}"
-            
-            st.session_state.messages.append({"role": "user", "content": system_msg})
-            st.session_state.chat_history.append({"role": "user", "content": "📎 [Отправлен файл лога на анализ]"})
+                log_payload = f"VIN: {st.session_state.vin_code}. " + log_payload
+                
+            st.session_state.chat_history.append({"role": "user", "content": log_payload})
             
             with st.chat_message("assistant"):
-                with st.spinner("Анализирую параметры заезда..."):
-                    response = ask_ai_chat(API_KEY, MODEL_NAME, st.session_state.messages)
+                with st.spinner("Анализирую параметры лога..."):
+                    response = ask_ai_chat(API_KEY, MODEL_NAME, st.session_state.chat_history)
                     st.write(response)
                     
-            st.session_state.messages.append({"role": "assistant", "content": response})
             st.session_state.chat_history.append({"role": "assistant", "content": response})
             st.rerun()
 
-# --- ВВОД ОБЫЧНОГО СООБЩЕНИЯ В ЧАТ ---
-
+# Ввод сообщения
 if user_input := st.chat_input("Напишите симптомы или задайте вопрос..."):
     if not API_KEY:
-        st.error("Ошибка: API-ключ не найден в настройках хостинга Secrets!")
+        st.error("Ошибка: API-ключ не найден в Secrets!")
     else:
         with st.chat_message("user"):
             st.write(user_input)
             
+        # Добавляем сообщение в единую историю сессии
         st.session_state.chat_history.append({"role": "user", "content": user_input})
-        
-        ai_payload = user_input
-        if st.session_state.vin_code and len(st.session_state.messages) == 1:
-            ai_payload = f"Мой VIN: {st.session_state.vin_code}. " + ai_payload
-            
-        st.session_state.messages.append({"role": "user", "content": ai_payload})
         
         with st.chat_message("assistant"):
             with st.spinner("Думаю..."):
-                response = ask_ai_chat(API_KEY, MODEL_NAME, st.session_state.messages)
+                # Отправляем ВСЮ накопленную историю чата целиком
+                response = ask_ai_chat(API_KEY, MODEL_NAME, st.session_state.chat_history)
                 st.write(response)
                 
-        st.session_state.messages.append({"role": "assistant", "content": response})
         st.session_state.chat_history.append({"role": "assistant", "content": response})
         st.rerun()

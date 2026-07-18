@@ -251,9 +251,81 @@ if "vin_code" not in st.session_state:
 with st.sidebar:
     st.header("⚙️ Панель управления")
     vin_input = st.text_input("VIN-код автомобиля", value=st.session_state.vin_code, max_chars=17)
-    if vin_input and vin_input.upper() != st.session_state.vin_code:
-        st.session_state.vin_code = vin_input.upper()
-        save_history_to_disk(st.session_state.chat_history, st.session_state.vin_code)
+    import re
+from PIL import Image
+import numpy as np
+
+# Пытаемся импортировать easyocr для распознавания VIN по фото
+try:
+    import easyocr
+    @st.cache_resource
+    def get_ocr_reader():
+        # Инициализируем распознаватель для английского языка
+        return easyocr.Reader(['en'], gpu=False)
+except ImportError:
+    easyocr = None
+
+st.sidebar.subheader("🚗 Идентификация автомобиля")
+
+# Инициализируем VIN в сессии, если его еще нет
+if "vin_code" not in st.session_state:
+    st.session_state.vin_code = ""
+
+# Функция для поиска VIN в тексте
+def extract_vin(text):
+    vin_pattern = re.compile(r'\b([A-HJ-NPR-Z0-9]{17})\b', re.IGNORECASE)
+    match = vin_pattern.search(text)
+    return match.group(1).upper() if match else None
+
+# Виджет загрузки фото VIN-кода
+if easyocr:
+    uploaded_vin_img = st.sidebar.file_uploader(
+        "📷 Сканировать VIN по фото (СТТС, кузов)", 
+        type=["jpg", "jpeg", "png"],
+        key="vin_image_uploader"
+    )
+    
+    # Храним имя последнего обработанного файла, чтобы не распознавать его по кругу
+    if "last_processed_vin_img" not in st.session_state:
+        st.session_state.last_processed_vin_img = None
+
+    if uploaded_vin_img is not None:
+        # Проверяем, изменился ли файл (или это первая загрузка)
+        if uploaded_vin_img.name != st.session_state.last_processed_vin_img:
+            try:
+                with st.spinner("Распознаю VIN-код с фотографии..."):
+                    image = Image.open(uploaded_vin_img)
+                    img_np = np.array(image)
+                    reader = get_ocr_reader()
+                    result = reader.readtext(img_np, detail=0)
+                    
+                    full_text = "".join(result).replace(" ", "")
+                    found_vin = extract_vin(full_text)
+                    
+                    if found_vin:
+                        st.session_state.vin_code = found_vin
+                        # Запоминаем имя файла, чтобы не обрабатывать повторно
+                        st.session_state.last_processed_vin_img = uploaded_vin_img.name
+                        st.rerun()
+                    else:
+                        st.sidebar.error("❌ Не удалось четко распознать 17-значный VIN. Попробуйте другое фото или введите вручную.")
+            except Exception as e:
+                st.sidebar.error(f"Ошибка сканирования: {e}")
+                
+    # Если файл удалили из виджета, сбрасываем метку
+    elif uploaded_vin_img is None and st.session_state.last_processed_vin_img is not None:
+        st.session_state.last_processed_vin_img = None
+
+# Поле ручного ввода (куда автоматически подставится VIN после сканирования)
+vin_input = st.sidebar.text_input(
+    "Ввести VIN-код вручную:", 
+    value=st.session_state.vin_code,
+    max_chars=17
+)
+
+# Сохраняем актуальный VIN в сессию
+if vin_input != st.session_state.vin_code:
+    st.session_state.vin_code = vin_input.upper()
         
     if st.button("🗑️ Очистить всю историю чата"):
         if os.path.exists(CACHE_FILE):

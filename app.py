@@ -48,7 +48,7 @@ def safe_parse_log(file_bytes):
         text_data = file_bytes.decode('cp1251', errors='ignore')
         lines = text_data.splitlines()
         
-        # Поиск VIN
+        # 1. Поиск VIN-кода
         vin_pattern = re.compile(r'\b([A-HJ-NPR-Z0-9]{17})\b', re.IGNORECASE)
         extracted_vin = None
         for line in lines[:20]:
@@ -57,28 +57,65 @@ def safe_parse_log(file_bytes):
                 extracted_vin = match.group(1).upper()
                 break
         
-        # Ищем начало таблицы
-        start_idx = 0
+        # 2. Умный поиск начала таблицы с данными
+        # Ищем строку, где идут чистые цифры лога (например: "0.01", "0.35")
+        data_start_idx = None
         for i, line in enumerate(lines):
-            if any(x in line for x in ["Группа", "Group", "Об/мин", "RPM"]):
-                start_idx = i
-                break
-                
-        clean_csv_data = "\n".join(lines[start_idx:])
-        df = pd.read_csv(io.StringIO(clean_csv_data), sep=None, engine='python')
-        
-        # Фильтрация числовых колонок
-        safe_columns = []
-        for col in df.columns:
-            converted = pd.to_numeric(df[col], errors='coerce')
-            if converted.notna().sum() / len(df) > 0.8:
-                df[col] = converted
-                safe_columns.append(col)
-                
-        df_safe = df[safe_columns].dropna()
-        if len(df_safe) > 150: df_safe = df_safe.iloc[:150]
+            parts = line.split()
+            # Если строка начинается с таймстампа (числа) и содержит несколько колонок цифр
+            if parts and re.match(r'^\d+[\.,]?\d*$', parts[0]):
+                if len(parts) >= 2:
+                    data_start_idx = i
+                    break
+                    
+        if data_start_idx is None:
+            return None, extracted_vin
             
-        return df_safe, extracted_vin
+        # 3. Собираем заголовки. Идем вверх от цифр и ищем текстовые названия
+        headers = []
+        # Проверяем строки прямо над цифрами
+        for offset in [2, 3, 4]:
+            check_idx = data_start_idx - offset
+            if check_idx >= 0:
+                potential_headers = lines[check_idx].split()
+                # Если нашли строку с названиями параметров (Knock, RPM, Retard, Cylinder и т.д.)
+                if len(potential_headers) >= 2 and any(not x.replace('.','').isdigit() for x in potential_headers):
+                    headers = potential_headers
+                    break
+                    
+        # Извлекаем только строки с данными
+        numeric_lines = []
+        for line in lines[data_start_idx:]:
+            parts = line.split()
+            if parts and re.match(r'^-?\d+[\.,]?\d*$', parts[0].replace('-','')):
+                # Заменяем запятые на точки для корректного чтения чисел
+                clean_parts = [p.replace(',', '.') for p in parts]
+                numeric_lines.append(clean_parts)
+                
+        if not numeric_lines:
+            return None, extracted_vin
+            
+        # Определяем итоговое количество колонок
+        col_count = min(len(row) for row in numeric_lines)
+        numeric_lines = [row[:col_count] for row in numeric_lines]
+        
+        # Создаем названия колонок, если не нашли подходящий заголовок сверху
+        if len(headers) != col_count:
+            headers = [f"Параметр_{i}" for i in range(col_count)]
+            headers[0] = "TIME STAMP"
+            
+        # Строим чистый DataFrame
+        df = pd.DataFrame(numeric_lines, columns=headers)
+        
+        # Принудительно переводим все ячейки в числа
+        for col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+        df = df.dropna()
+        if len(df) > 150: 
+            df = df.iloc[:150]
+            
+        return df, extracted_vin
     except Exception as e:
         return None, None
 

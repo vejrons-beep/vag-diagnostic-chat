@@ -99,10 +99,16 @@ def safe_parse_log(file_bytes):
         col_count = min(len(row) for row in numeric_lines)
         numeric_lines = [row[:col_count] for row in numeric_lines]
         
-        # Создаем названия колонок, если не нашли подходящий заголовок сверху
+      # Создаем понятные названия колонок, если оригинальные заголовки не распознались
         if len(headers) != col_count:
-            headers = [f"Параметр_{i}" for i in range(col_count)]
+            headers = [f"Колонка_{i}" for i in range(col_count)]
             headers[0] = "TIME STAMP"
+            # Если это 020 группа или в таблице 5 колонок, подписываем цилиндры
+            if col_count == 5:
+                headers[1] = "Цилиндр 1 (Откат УОЗ)"
+                headers[2] = "Цилиндр 2 (Откат УОЗ)"
+                headers[3] = "Цилиндр 3 (Откат УОЗ)"
+                headers[4] = "Цилиндр 4 (Откат УОЗ)"
             
         # Строим чистый DataFrame
         df = pd.DataFrame(numeric_lines, columns=headers)

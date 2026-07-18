@@ -9,14 +9,14 @@ import re
 # Настройка страницы Streamlit
 st.set_page_config(page_title="VAG Expert Chat", page_icon="🚗", layout="wide")
 
-# Функция безопасного парсинга и извлечения VIN-кода
-def safe_parse_log(uploaded_file):
+# Кэшируем функцию парсинга, чтобы не перечитывать тяжелый файл при перезапуске сессии
+@st.cache_data(show_spinner=False)
+def safe_parse_log(file_bytes):
     try:
-        file_bytes = uploaded_file.read()
         text_data = file_bytes.decode('cp1251', errors='ignore')
         lines = text_data.splitlines()
         
-        # Регулярка для поиска VIN (17 символов)
+        # Поиск VIN (17 символов)
         vin_pattern = re.compile(r'\b([A-HJ-NPR-Z0-9]{17})\b', re.IGNORECASE)
         extracted_vin = None
         
@@ -51,7 +51,6 @@ def safe_parse_log(uploaded_file):
             
         return df_safe, extracted_vin
     except Exception as e:
-        st.error(f"Ошибка безопасности при анализе структуры файла: {e}")
         return None, None
 
 # Функция отправки истории диалога в OpenRouter
@@ -78,7 +77,7 @@ def ask_ai_chat(api_key, model_name, messages):
     except Exception as e:
         return f"Ошибка сети: {e}"
 
-# --- ИНИЦИАЛИЗАЦИЯ СЕССИИ И НАСТРОЕК ---
+# --- ИНИЦИАЛИЗАЦИЯ И КЭШИРОВАНИЕ СЕССИИ ---
 
 MODEL_NAME = "google/gemini-2.5-flash"
 API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
@@ -88,6 +87,7 @@ SYSTEM_PROMPT = (
     "ОБЯЗАТЕЛЬНО помни контекст предыдущих сообщений пользователя и свои прошлые ответы!"
 )
 
+# Сохраняем состояние чата в глобальный кэш Streamlit, привязанный к пользователю
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -111,7 +111,9 @@ with st.sidebar:
 # --- ОБРАБОТКА ФАЙЛА ---
 log_df = None
 if uploaded_file is not None:
-    log_df, extracted_vin = safe_parse_log(uploaded_file)
+    # Передаем байты вместо объекта файла, чтобы работал декоратор @st.cache_data
+    file_bytes = uploaded_file.read()
+    log_df, extracted_vin = safe_parse_log(file_bytes)
     if extracted_vin and extracted_vin != st.session_state.vin_code:
         st.session_state.vin_code = extracted_vin
         st.sidebar.info(f"📍 Найден VIN: {extracted_vin}")
@@ -119,7 +121,7 @@ if uploaded_file is not None:
 # --- ИНТЕРФЕЙС ЧАТА ---
 st.title("VAG Expert Chat 💬")
 
-# Отображаем только видимую историю (без системного промпта)
+# Отображаем историю
 for msg in st.session_state.chat_history:
     if msg["role"] != "system":
         with st.chat_message(msg["role"]):
@@ -128,7 +130,17 @@ for msg in st.session_state.chat_history:
 # Лог и кнопка анализа
 if log_df is not None and not log_df.empty:
     st.info("📊 Лог-файл успешно загружен в систему.")
-    # (Здесь остается твой код построения графика Plotly)
+    
+    rpm_cols = [c for c in log_df.columns if any(x in c.lower() for x in ["обороты", "rpm", "speed"])]
+    map_cols = [c for c in log_df.columns if any(x in c.lower() for x in ["давлен", "map", "pressure"])]
+    
+    if rpm_cols and map_cols:
+        with st.expander("Посмотреть график заезда", expanded=True):
+            fig = px.line(log_df, x=rpm_cols[0], y=map_cols[0], 
+                          title="Давление впуска (MAP) от Оборотов",
+                          labels={rpm_cols[0]: "Обороты", map_cols[0]: "Давление"},
+                          template="plotly_dark")
+            st.plotly_chart(fig, use_container_width=True)
     
     if st.button("🚀 Отправить лог на анализ ИИ"):
         if not API_KEY:
@@ -152,17 +164,15 @@ if log_df is not None and not log_df.empty:
 # Ввод сообщения
 if user_input := st.chat_input("Напишите симптомы или задайте вопрос..."):
     if not API_KEY:
-        st.error("Ошибка: API-ключ не найден в Secrets!")
+        st.error("Ошибка: API-ключ не найден in Secrets!")
     else:
         with st.chat_message("user"):
             st.write(user_input)
             
-        # Добавляем сообщение в единую историю сессии
         st.session_state.chat_history.append({"role": "user", "content": user_input})
         
         with st.chat_message("assistant"):
             with st.spinner("Думаю..."):
-                # Отправляем ВСЮ накопленную историю чата целиком
                 response = ask_ai_chat(API_KEY, MODEL_NAME, st.session_state.chat_history)
                 st.write(response)
                 

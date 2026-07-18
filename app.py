@@ -289,40 +289,7 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("🚗 Идентификация автомобиля")
 
-    uploaded_vin_img = None
-    if easyocr:
-        uploaded_vin_img = st.file_uploader(
-            "📷 Сканировать VIN по фото (СТТС, кузов)", 
-            type=["jpg", "jpeg", "png"],
-            key="vin_image_uploader"
-        )
-        
-    if "last_processed_vin_img" not in st.session_state:
-        st.session_state.last_processed_vin_img = None
-
-    if uploaded_vin_img is not None:
-        if uploaded_vin_img.name != st.session_state.last_processed_vin_img:
-            try:
-                with st.spinner("Распознаю VIN-код с фотографии..."):
-                    image = Image.open(uploaded_vin_img)
-                    img_np = np.array(image)
-                    reader = get_ocr_reader()
-                    result = reader.readtext(img_np, detail=0)
-                    
-                    full_text = "".join(result)
-                    found_vin = extract_vin(full_text)
-                    
-                    if found_vin:
-                        st.session_state.vin_code = found_vin
-                        st.session_state.last_processed_vin_img = uploaded_vin_img.name
-                        st.rerun()
-                    else:
-                        st.error("❌ Не удалось четко распознать 17-значный VIN. Попробуйте другое фото или введите вручную.")
-            except Exception as e:
-                st.error(f"Ошибка сканирования: {e}")
-    elif uploaded_vin_img is None and st.session_state.last_processed_vin_img is not None:
-        st.session_state.last_processed_vin_img = None
-
+    # Оставляем только прямое ручное введение VIN-кода
     vin_input = st.text_input(
         "Ввести VIN-код вручную:", 
         value=st.session_state.vin_code,
@@ -332,19 +299,17 @@ with st.sidebar:
     if vin_input != st.session_state.vin_code:
         st.session_state.vin_code = vin_input.upper()
 
-    # --- НОВЫЙ БЛОК: МОДИФИКАЦИИ ---
+    # --- МОДИФИКАЦИИ ---
     st.markdown("---")
     st.subheader("🔧 Модификации автомобиля")
     is_tuned = st.checkbox("⚙️ Чип-тюнинг (Stage 1/2/3)")
     is_decatted = st.checkbox("💨 Удален катализатор (Декат)")
     
-    # Сохраняем в сессию, чтобы передать в чат
     st.session_state.mods = {
         "tuned": is_tuned,
         "decatted": is_decatted
     }
-    # -------------------------------
-    
+
     st.markdown("---")
     
     if st.button("🗑️ Очистить всю историю чата"):
@@ -353,7 +318,6 @@ with st.sidebar:
             {"role": "assistant", "content": [{"type": "text", "text": "Привет! Я твой виртуальный диагност VAG. 🚗\n\nОпиши симптомы, загрузи CSV-лог или просто скинь СКРИНШОТ экрана 'Васи Диагноста' с ошибками."}]}
         ]
         st.session_state.vin_code = ""
-        st.session_state.last_processed_vin_img = None
         clear_history_on_disk()
         st.rerun()
 

@@ -329,6 +329,22 @@ with st.sidebar:
 # --- ОСНОВНАЯ ПАНЕЛЬ ЗАГРУЗКИ ДАННЫХ ---
 st.title("VAG Expert Chat + Vision 💬")
 
+# --- ИНТЕРФЕЙС ЧАТА (ОСНОВНОЙ ЭКРАН) ---
+st.title("VAG Expert Chat + Vision 💬")
+
+# 1. ПЕРВЫМ ДЕЛОМ ВЫВОДИМ ИСТОРИЮ ЧАТА (чтобы старые сообщения были вверху, а новые внизу)
+for msg in st.session_state.chat_history:
+    if msg["role"] != "system":
+        with st.chat_message(msg["role"]):
+            for content_item in msg["content"]:
+                if content_item["type"] == "text":
+                    st.write(content_item["text"])
+                elif content_item["type"] == "image_url":
+                    st.image(content_item["image_url"]["url"], width=300)
+
+st.markdown("---")
+
+# 2. ТЕПЕРЬ ВЫВОДИМ ЗОНУ ЗАГРУЗКИ ДАННЫХ ВНИЗУ ЧАТА
 st.subheader("📁 Загрузка данных для анализа")
 uploaded_file = st.file_uploader("Загрузи лог (.csv, .txt) ИЛИ Скриншот (.png, .jpg)", type=["csv", "txt", "png", "jpg", "jpeg"])
 
@@ -350,17 +366,6 @@ if uploaded_file is not None:
     elif "image" in file_type:
         image_base64 = encode_image_to_base64(uploaded_file)
         st.image(uploaded_file, caption="Превью загруженного скриншота", width=400)
-
-# --- ИНТЕРФЕЙС ЧАТА ---
-# Отображаем историю чата
-for msg in st.session_state.chat_history:
-    if msg["role"] != "system":
-        with st.chat_message(msg["role"]):
-            for content_item in msg["content"]:
-                if content_item["type"] == "text":
-                    st.write(content_item["text"])
-                elif content_item["type"] == "image_url":
-                    st.image(content_item["image_url"]["url"], width=300)
 
 # Кнопка для анализа CSV-лога
 if log_df is not None and not log_df.empty:
@@ -470,7 +475,7 @@ if image_base64 is not None:
             save_history_to_disk(st.session_state.chat_history, st.session_state.vin_code)
             st.rerun()
 
-# Ввод обычного текстового сообщения
+# 3. В САМОМ НИЗУ ОСТАЕТСЯ ОКНО ВВОДА ТЕКСТА КЛАССИЧЕСКОГО ЧАТА
 if user_input := st.chat_input("Напишите симптомы или задайте вопрос..."):
     if not API_KEY:
         st.error("Ошибка: API-ключ не найден!")

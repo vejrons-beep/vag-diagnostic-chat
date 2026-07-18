@@ -250,8 +250,7 @@ if "vin_code" not in st.session_state:
 # --- БОКОВАЯ ПАНЕЛЬ ---
 with st.sidebar:
     st.header("⚙️ Панель управления")
-    vin_input = st.text_input("VIN-код автомобиля", value=st.session_state.vin_code, max_chars=17)
-    import re
+        import re
 from PIL import Image
 import numpy as np
 

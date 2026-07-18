@@ -18,6 +18,34 @@ MODEL_NAME = "google/gemini-2.5-flash"
 API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
 CACHE_FILE = "chat_history_cache.json"
 
+# --- ПРОВЕРКА ПИН-КОДА ---
+def check_password():
+    """Возвращает True, если пароль верен или уже были авторизованы."""
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+
+    if st.session_state.authenticated:
+        return True
+
+    st.title("🔒 Доступ ограничен")
+    st.write("Введите пин-код для продолжения")
+
+    with st.form("auth_form"):
+        password = st.text_input("Пин-код", type="password")
+        submit = st.form_submit_button("Войти")
+
+        if submit:
+            correct_password = st.secrets.get("APP_PASSWORD", os.environ.get("APP_PASSWORD", "1234"))
+            if password == correct_password:
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("Неверный пин-код")
+    return False
+
+if not check_password():
+    st.stop()
+
 # --- ПОСТОЯННАЯ ПАМЯТЬ ---
 def save_history_to_disk(history, vin_code):
     try:
@@ -275,7 +303,6 @@ def get_system_prompt(mode="Механика (Группы 001-063)", is_base_tr
 ЖЕСТКОЕ ПРАВИЛО: Если параметр is_base_trim=True (базовая комплектация), то любые значения MAP выше 315 мбар и Нагрузки выше 20% на холостом ходу (при оборотах ~700-800) ТРАКТУЙ КАК АНОМАЛИЮ (подсос воздуха или загрязнение дроссельной заслонки), игнорируя общие верхние допуски (340 мбар и 25%).
 """
 
-    # Блок учёта модификаций
     mods_note = "\n--- УЧЕТ МОДИФИКАЦИЙ АВТОМОБИЛЯ ---"
     if mods.get("decatted", False):
         mods_note += """
@@ -377,14 +404,12 @@ if "generated_log_df" not in st.session_state:
 if "uploaded_image_key" not in st.session_state:
     st.session_state.uploaded_image_key = 0
 
-# --- БОКОВАЯ ПАНЕЛЬ (НОВЫЙ БЛОК УПРАВЛЕНИЯ) ---
+# --- БОКОВАЯ ПАНЕЛЬ ---
 with st.sidebar:
     st.header("⚙️ Конфигурация автомобиля")
     st.write("Настройте параметры машины для точной работы ИИ.")
-
     st.markdown("---")
 
-    # Переключатель комплектации
     st.subheader("📦 Комплектация")
     st.session_state.is_base_trim = st.checkbox(
         "Базовая комплектация (CFNA BASE)",
@@ -393,8 +418,6 @@ with st.sidebar:
     )
 
     st.markdown("---")
-
-    # Блок модификаций (Тюнинг / Выпуск / ГБО)
     st.subheader("🛠️ Модификации и тюнинг")
 
     decatted = st.checkbox(
@@ -402,29 +425,20 @@ with st.sidebar:
         value=st.session_state.mods.get("decatted", False),
         help="ИИ проигнорирует просадки и прямые линии по второй лямбде (Группа 041) и не будет советовать замену ката."
     )
-
     lpg = st.checkbox(
         "Установлено ГБО (Газ)",
         value=st.session_state.mods.get("lpg", False),
         help="ИИ расширит допуски по долговременным коррекциям (LTFT) до ±8% и сделает поправку на специфику смеси пропан-бутана."
     )
-
     tuned = st.checkbox(
         "Чип-тюнинг (Stage 1/Custom)",
         value=st.session_state.mods.get("tuned", False),
         help="ИИ сделает скидку на более ранние углы зажигания (УОЗ) и повышенное время впрыска под нагрузкой."
     )
 
-    # Обновляем словарь модов
-    st.session_state.mods = {
-        "tuned": tuned,
-        "decatted": decatted,
-        "lpg": lpg
-    }
+    st.session_state.mods = {"tuned": tuned, "decatted": decatted, "lpg": lpg}
 
     st.markdown("---")
-
-    # Переключатель режима диагностики
     st.subheader("🔍 Режим диагностики")
     st.session_state.diagnostic_mode = st.radio(
         "Выберите контур проверки:",
@@ -432,7 +446,6 @@ with st.sidebar:
         index=0 if st.session_state.diagnostic_mode.startswith("Механика") else 1
     )
 
-    # Показываем VIN, если он распознан
     if st.session_state.get("vin_code"):
         st.markdown("---")
         st.info(f"🆔 **Распознанный VIN:**\n`{st.session_state.vin_code}`")
@@ -484,6 +497,12 @@ with st.sidebar:
         st.session_state.generated_log_df = None
         st.session_state.uploaded_image_key += 1
         clear_history_on_disk()
+        st.rerun()
+
+    # Кнопка выхода (не очищает историю)
+    if st.button("🚪 Выйти"):
+        # Сбрасываем только авторизацию, история остаётся
+        st.session_state.authenticated = False
         st.rerun()
 
 # --- ОСНОВНОЙ ЭКРАН ---
@@ -560,7 +579,6 @@ if log_df is not None and not log_df.empty:
                 st.plotly_chart(fig, use_container_width=True)
             st.dataframe(log_df.head(10))
 
-    # Кнопка экспертного анализа
     btn_label = "Запустить экспертный анализ лога"
     if st.button(btn_label):
         if not API_KEY:

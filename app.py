@@ -244,19 +244,31 @@ for msg in st.session_state.chat_history:
 if log_df is not None and not log_df.empty:
     st.info("📊 CSV-лог успешно загружен в систему.")
     
-    # Пытаемся найти колонки для графика
+    # Ищем стандартные колонки для турбо-заезда
     rpm_cols = [c for c in log_df.columns if any(x in c.lower() for x in ["обороты", "rpm", "speed", "об/мин"])]
     map_cols = [c for c in log_df.columns if any(x in c.lower() for x in ["давлен", "map", "pressure", "бар", "bar"])]
     
-    if rpm_cols and map_cols:
-        with st.expander("Посмотреть график заезда", expanded=True):
+    with st.expander("📊 Посмотреть график параметров лога", expanded=True):
+        if rpm_cols and map_cols:
+            # Классический график давления от оборотов для заездов
             fig = px.line(log_df, x=rpm_cols[0], y=map_cols[0], 
-                          title=f"{map_cols[0]} от {rpm_cols[0]}",
+                          title=f"Диагностический график: {map_cols[0]} от {rpm_cols[0]}",
                           labels={rpm_cols[0]: rpm_cols[0], map_cols[0]: map_cols[0]},
                           template="plotly_dark")
             st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.warning("⚠️ В логе не найдены стандартные группы Оборотов/Давления для построения графика, но вы все равно можете отправить его на анализ ИИ.")
+        else:
+            # Если специфических колонок нет, строим ВСЕ параметры относительно Времени (TIME STAMP)
+            time_col = log_df.columns[0] # Обычно это TIME STAMP
+            other_cols = [c for c in log_df.columns if c != time_col]
+            
+            if other_cols:
+                fig = px.line(log_df, x=time_col, y=other_cols, 
+                              title=f"Изменение параметров по времени ({time_col})",
+                              labels={time_col: "Время (сек)", "value": "Значение / Откат углов"},
+                              template="plotly_dark")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("⚠️ Недостаточно числовых колонок для построения графика.")
     
     # Кнопка теперь показывается ВСЕГДА, когда загружен любой корректный CSV/TXT лог
     if st.button("🚀 Отправить загруженный лог на анализ"):

@@ -199,26 +199,30 @@ for msg in st.session_state.chat_history:
 
 # Кнопка для анализа CSV-лога
 if log_df is not None and not log_df.empty:
-    st.info("📊 CSV-лог успешно загружен.")
+    st.info("📊 CSV-лог успешно загружен в систему.")
     
-    rpm_cols = [c for c in log_df.columns if any(x in c.lower() for x in ["обороты", "rpm", "speed"])]
-    map_cols = [c for c in log_df.columns if any(x in c.lower() for x in ["давлен", "map", "pressure"])]
+    # Пытаемся найти колонки для графика
+    rpm_cols = [c for c in log_df.columns if any(x in c.lower() for x in ["обороты", "rpm", "speed", "об/мин"])]
+    map_cols = [c for c in log_df.columns if any(x in c.lower() for x in ["давлен", "map", "pressure", "бар", "bar"])]
     
     if rpm_cols and map_cols:
         with st.expander("Посмотреть график заезда", expanded=True):
             fig = px.line(log_df, x=rpm_cols[0], y=map_cols[0], 
-                          title="Давление впуска (MAP) от Оборотов",
-                          labels={rpm_cols[0]: "Обороты", map_cols[0]: "Давление"},
+                          title=f"{map_cols[0]} от {rpm_cols[0]}",
+                          labels={rpm_cols[0]: rpm_cols[0], map_cols[0]: map_cols[0]},
                           template="plotly_dark")
             st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("⚠️ В логе не найдены стандартные группы Оборотов/Давления для построения графика, но вы все равно можете отправить его на анализ ИИ.")
     
-    if st.button("🚀 Отправить CSV-лог на анализ"):
+    # Кнопка теперь показывается ВСЕГДА, когда загружен любой корректный CSV/TXT лог
+    if st.button("🚀 Отправить загруженный лог на анализ"):
         if not API_KEY:
             st.error("Ошибка: API-ключ не найден!")
         else:
             csv_str = log_df.to_csv(index=False)
             
-            # --- ПРОВЕРКА НА ДУБЛИКАТ ЛОГА ---
+            # Проверка на дубликат лога
             is_duplicate_log = False
             for old_msg in st.session_state.chat_history:
                 if old_msg["role"] == "user":
@@ -228,13 +232,11 @@ if log_df is not None and not log_df.empty:
                             break
             
             if is_duplicate_log:
-                # Если лог уже отсылался, сразу выводим предупреждение в чат без запроса к ИИ
                 st.session_state.chat_history.append({"role": "user", "content": [{"type": "text", "text": "📎 [Повторная попытка отправить тот же лог-файл]"}]})
                 st.session_state.chat_history.append({"role": "assistant", "content": [{"type": "text", "text": "Ты ошибся, ты присылал мне этот лог ранее. Посмотри на анализ выше!"}]})
                 save_history_to_disk(st.session_state.chat_history, st.session_state.vin_code)
                 st.rerun()
-            # ----------------------------------
-            
+                
             log_text_payload = f"Пользователь загрузил CSV-лог. Вот данные:\n{csv_str}"
             if st.session_state.vin_code:
                 log_text_payload = f"VIN: {st.session_state.vin_code}. " + log_text_payload

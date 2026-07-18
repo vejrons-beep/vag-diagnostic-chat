@@ -358,6 +358,37 @@ with st.sidebar:
     if vin_input != st.session_state.vin_code:
         st.session_state.vin_code = vin_input.upper()
 
+    # --- УЛУЧШЕНИЕ: АВТОМАТИЧЕСКАЯ РАСШИФРОВКА VIN НА УРОВНЕ КОДА ---
+    detected_engine = "1.6 CFNA (Атмо)" # Базовый мотор по умолчанию
+    
+    if st.session_state.vin_code:
+        # Проверяем маску VIN для Polo Sedan калужской сборки с мотором CFNA (обычно начинается с XW8ZZZ61Z)
+        if st.session_state.vin_code.startswith("XW8ZZZ61Z"):
+            detected_engine = "1.6 CFNA (Атмо)"
+            st.sidebar.success("🤖 Определен: Polo Sedan 1.6 CFNA")
+            # Загружаем эталоны атмосферника CFNA
+            st.session_state.reference_map = {
+                "Давление ДАД (mbar)": (280.0, 320.0, "green", "red"),
+                "Время впрыска (мс)": (2.0, 2.5, "green", "red"),
+                "Краткосрочная коррекция (%)": (-5.0, 5.0, "blue", "orange"),
+                "Долговременная коррекция (%)": (-7.0, 7.0, "blue", "orange"),
+                "Обороты двигателя (об/мин)": (680.0, 850.0, "green", "red")
+            }
+        # Если это европейский VAG с 1.4 TSI (например, VIN начинается с WVWZZZ1K или пассаты/гольфы)
+        elif any(x in st.session_state.vin_code for x in ["WVWZZZ", "XW8ZZZ1K"]):
+            detected_engine = "1.4 TSI (Турбо)"
+            st.sidebar.warning("🤖 Определен: VAG 1.4 TSI (Турбо)")
+            # На лету подменяем карту эталонов под турбо-мотор!
+            st.session_state.reference_map = {
+                "Давление ДАД (mbar)": (340.0, 390.0, "green", "red"),
+                "Время впрыска (мс)": (1.4, 2.0, "green", "red"),
+                "Краткосрочная коррекция (%)": (-5.0, 5.0, "blue", "orange"),
+                "Долговременная коррекция (%)": (-7.0, 7.0, "blue", "orange"),
+                "Обороты двигателя (об/мин)": (700.0, 900.0, "green", "red")
+            }
+    else:
+        st.sidebar.info("ℹ️ VIN не указан. Применяются базовые нормы CFNA.")
+
     st.markdown("---")
     st.subheader("🔧 Модификации автомобиля")
     is_tuned = st.checkbox("⚙️ Чип-тюнинг")

@@ -287,7 +287,7 @@ def extract_vin(text):
 with st.sidebar:
     st.header("⚙️ Панель управления")
     st.markdown("---")
-    st.subheader("🚗 Идентификация автомобиля")
+    st.subheader("🚗 VIN CODE")
 
     # Оставляем только прямое ручное введение VIN-кода
     vin_input = st.text_input(

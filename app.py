@@ -20,7 +20,6 @@ CACHE_FILE = "chat_history_cache.json"  # Файл постоянной памя
 # --- ФУНКЦИИ ДЛЯ РАБОТЫ С ПОСТОЯННОЙ ПАМЯТЬЮ ---
 
 def save_history_to_disk(history, vin_code):
-    """Сохраняет историю чата и VIN в файл на сервере"""
     try:
         data = {
             "vin_code": vin_code,
@@ -32,7 +31,6 @@ def save_history_to_disk(history, vin_code):
         pass
 
 def load_history_from_disk():
-    """Загружает историю чата и VIN из файла на сервере"""
     if os.path.exists(CACHE_FILE):
         try:
             with open(CACHE_FILE, "r", encoding="utf-8") as f:
@@ -100,8 +98,6 @@ def ask_ai_chat(api_key, model_name, messages):
         "HTTP-Referer": "https://share.streamlit.io", 
     }
     
-    # Чтобы не отправлять гигантские картинки в Base64 повторно при каждом запросе истории
-    # и не забивать контекст, очищаем старые картинки в отправляемой истории
     cleaned_messages = []
     for m in messages:
         new_content = []
@@ -109,11 +105,9 @@ def ask_ai_chat(api_key, model_name, messages):
             if item["type"] == "text":
                 new_content.append(item)
             elif item["type"] == "image_url":
-                # Заменяем старую тяжелую картинку текстом, чтобы OpenRouter не выдавал ошибку размера
                 new_content.append({"type": "text", "text": "[Ранее отправленный скриншот экрана диагностики]"})
         cleaned_messages.append({"role": m["role"], "content": new_content})
 
-    # На всякий случай возвращаем последнюю картинку активной, если это был самый свежий запрос
     if messages and messages[-1]["content"]:
         cleaned_messages[-1]["content"] = messages[-1]["content"]
 
@@ -139,7 +133,6 @@ SYSTEM_PROMPT = (
     "ОБЯЗАТЕЛЬНО помни контекст предыдущих сообщений пользователя и свои прошлые ответы!"
 )
 
-# Пытаемся восстановить историю с жесткого диска сервера
 saved_history, saved_vin = load_history_from_disk()
 
 if "chat_history" not in st.session_state:
@@ -162,7 +155,6 @@ with st.sidebar:
         st.session_state.vin_code = vin_input.upper()
         save_history_to_disk(st.session_state.chat_history, st.session_state.vin_code)
         
-    # Кнопка полной очистки памяти (если захочешь начать новый диалог с нуля)
     if st.button("🗑️ Очистить всю историю чата"):
         if os.path.exists(CACHE_FILE):
             os.remove(CACHE_FILE)
@@ -225,6 +217,24 @@ if log_df is not None and not log_df.empty:
             st.error("Ошибка: API-ключ не найден!")
         else:
             csv_str = log_df.to_csv(index=False)
+            
+            # --- ПРОВЕРКА НА ДУБЛИКАТ ЛОГА ---
+            is_duplicate_log = False
+            for old_msg in st.session_state.chat_history:
+                if old_msg["role"] == "user":
+                    for item in old_msg["content"]:
+                        if item["type"] == "text" and csv_str in item["text"]:
+                            is_duplicate_log = True
+                            break
+            
+            if is_duplicate_log:
+                # Если лог уже отсылался, сразу выводим предупреждение в чат без запроса к ИИ
+                st.session_state.chat_history.append({"role": "user", "content": [{"type": "text", "text": "📎 [Повторная попытка отправить тот же лог-файл]"}]})
+                st.session_state.chat_history.append({"role": "assistant", "content": [{"type": "text", "text": "Ты ошибся, ты присылал мне этот лог ранее. Посмотри на анализ выше!"}]})
+                save_history_to_disk(st.session_state.chat_history, st.session_state.vin_code)
+                st.rerun()
+            # ----------------------------------
+            
             log_text_payload = f"Пользователь загрузил CSV-лог. Вот данные:\n{csv_str}"
             if st.session_state.vin_code:
                 log_text_payload = f"VIN: {st.session_state.vin_code}. " + log_text_payload
@@ -248,6 +258,25 @@ if image_base64 is not None:
         if not API_KEY:
             st.error("Ошибка: API-ключ не найден!")
         else:
+            # --- ПРОВЕРКА НА ДУБЛИКАТ СКРИНШОТА ---
+            is_duplicate_img = False
+            # Извлекаем чистую base64 строку (после запятой) для точного сравнения структуры данных
+            pure_base64 = image_base64.split(",")[1] if "," in image_base64 else image_base64
+            
+            for old_msg in st.session_state.chat_history:
+                if old_msg["role"] == "user":
+                    for item in old_msg["content"]:
+                        if item["type"] == "image_url" and pure_base64 in item["image_url"]["url"]:
+                            is_duplicate_img = True
+                            break
+            
+            if is_duplicate_img:
+                st.session_state.chat_history.append({"role": "user", "content": [{"type": "text", "text": "📎 [Повторная попытка отправить тот же скриншот]"}]})
+                st.session_state.chat_history.append({"role": "assistant", "content": [{"type": "text", "text": "Ты ошибся, ты присылал мне этот скриншот ранее. Посмотри на анализ выше!"}]})
+                save_history_to_disk(st.session_state.chat_history, st.session_state.vin_code)
+                st.rerun()
+            # --------------------------------------
+            
             prompt_text = "Пользователь загрузил скриншот. Распознай ошибки, группы или графики на нем и дай диагностический вердикт."
             if st.session_state.vin_code:
                 prompt_text = f"VIN автомобиля: {st.session_state.vin_code}. " + prompt_text

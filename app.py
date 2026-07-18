@@ -272,9 +272,39 @@ if "vin_code" not in st.session_state:
 
 # Функция для поиска VIN в тексте
 def extract_vin(text):
-    vin_pattern = re.compile(r'\b([A-HJ-NPR-Z0-9]{17})\b', re.IGNORECASE)
-    match = vin_pattern.search(text)
-    return match.group(1).upper() if match else None
+    # Очищаем текст от мусора, пробелов и приводим к верхнему регистру
+    clean_text = text.upper().replace(" ", "").replace("-", "").replace("_", "")
+    
+    # Исправляем типичные ошибки OCR (заменяем запрещенные в VIN буквы O, I, Q на похожие цифры)
+    clean_text = clean_text.replace("O", "0").replace("I", "1").replace("Q", "9")
+    
+    # Ищем любую непрерывную последовательность из 17 валидных символов VIN
+    vin_pattern = re.compile(r'([A-HJ-NPR-Z0-9]{17})')
+    match = vin_pattern.search(clean_text)
+    return match.group(1) if match else None
+
+# Обновленный блок обработки в file_uploader
+if uploaded_vin_img is not None:
+    if uploaded_vin_img.name != st.session_state.last_processed_vin_img:
+        try:
+            with st.spinner("Распознаю VIN-код с фотографии..."):
+                image = Image.open(uploaded_vin_img)
+                img_np = np.array(image)
+                reader = get_ocr_reader()
+                result = reader.readtext(img_np, detail=0)
+                
+                # Соединяем ВСЕ строки с картинки в одну сплошную массу для поиска
+                full_text = "".join(result)
+                found_vin = extract_vin(full_text)
+                
+                if found_vin:
+                    st.session_state.vin_code = found_vin
+                    st.session_state.last_processed_vin_img = uploaded_vin_img.name
+                    st.rerun()
+                else:
+                    st.sidebar.error("❌ Не удалось четко распознать 17-значный VIN. Попробуйте сделать фото ближе, при более ровном свете или введите вручную.")
+        except Exception as e:
+            st.sidebar.error(f"Ошибка сканирования: {e}")
 
 # Виджет загрузки фото VIN-кода
 if easyocr:

@@ -27,7 +27,7 @@ def check_password():
     if st.session_state.authenticated:
         return True
 
-    st.title("🔒 Доступ ограничен")
+    st.title("🔒")
     st.write("Введите пин-код для продолжения")
 
     with st.form("auth_form"):

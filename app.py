@@ -438,24 +438,20 @@ if log_df is not None and not log_df.empty:
     map_cols = [c for c in log_df.columns if any(x in c.lower() for x in ["давлен", "map", "pressure", "бар", "bar"])]
     
     with st.expander("📊 Посмотреть график параметров лога", expanded=True):
-        if rpm_cols and map_cols:
-            fig = px.line(log_df, x=rpm_cols[0], y=map_cols[0], 
-                          title=f"Диагностический график: {map_cols[0]} от {rpm_cols[0]}",
-                          labels={rpm_cols[0]: rpm_cols[0], map_cols[0]: map_cols[0]},
+        time_col = log_df.columns[0] # Это наша "Отметка Времени (сек)"
+        
+        # Выбираем, какие параметры мы хотим увидеть на графике
+        # Обороты лучше не мешать с давлением, так как у них слишком разные масштабы (840 и 300)
+        selected_cols = [c for c in log_df.columns if "Давление" in c or "коррекция" in c or "впрыска" in c]
+        
+        if selected_cols:
+            fig = px.line(log_df, x=time_col, y=selected_cols, 
+                          title="Динамика параметров во времени",
+                          labels={time_col: "Время (сек)", "value": "Значение"},
                           template="plotly_dark")
             st.plotly_chart(fig, use_container_width=True)
         else:
-            time_col = log_df.columns[0]
-            other_cols = [c for c in log_df.columns if c != time_col]
-            
-            if other_cols:
-                fig = px.line(log_df, x=time_col, y=other_cols, 
-                              title=f"Изменение параметров по времени ({time_col})",
-                              labels={time_col: "Время (сек)", "value": "Значение"},
-                              template="plotly_dark")
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.warning("⚠️ Недостаточно числовых колонок для построения графика.")
+            st.warning("⚠️ Не удалось найти подходящие колонки для построения графика.")
     
     button_label = "🚀 Отправить загруженный лог на анализ" if uploaded_file is not None else "🧪 Отправить тестовый лог на анализ"
     if st.button(button_label):

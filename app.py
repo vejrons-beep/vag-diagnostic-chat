@@ -326,6 +326,17 @@ vin_input = st.sidebar.text_input(
 # Сохраняем актуальный VIN в сессию
 if vin_input != st.session_state.vin_code:
     st.session_state.vin_code = vin_input.upper()
+
+# --- ВОТ ЭТОТ БЛОК ДОЛЖЕН БЫТЬ ОБЯЗАТЕЛЬНО, ЧТОБЫ ИСПРАВИТЬ NAMEERROR ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("📊 Диагностика заездов")
+
+uploaded_file = st.sidebar.file_uploader(
+    "Загрузить CSV или TXT лог (Вася Диагност / VCDS)", 
+    type=["csv", "txt"],
+    key="main_log_uploader"
+)
+# ------------------------------------------------------------------------
         
     if st.button("🗑️ Очистить всю историю чата"):
         if os.path.exists(CACHE_FILE):

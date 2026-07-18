@@ -395,7 +395,7 @@ with st.sidebar:
     
     new_ecu = st.selectbox(
         "Блок управления двигателем (ЭБУ):",
-        ["Magneti Marelli 7GV", "Magneti Marelli 4HV", "Bosch Motronic ME 7.5.10"]
+        ["Magneti Marelli 7GV"]
     )
     
     if new_mode != st.session_state.diagnostic_mode or new_trim != st.session_state.is_base_trim or new_ecu != st.session_state.ecu_type:

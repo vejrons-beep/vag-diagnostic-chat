@@ -52,7 +52,6 @@ def _get_gsheet():
         b64_str = st.secrets["GSPREAD_SERVICE_ACCOUNT_BASE64"]
         creds_json = base64.b64decode(b64_str).decode()
         creds_dict = json.loads(creds_json)
-        # Указываем область действия (scope) для Google Sheets
         scopes = ['https://www.googleapis.com/auth/spreadsheets']
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         client = gspread.authorize(creds)
@@ -61,7 +60,7 @@ def _get_gsheet():
         )
         return sheet.sheet1
     except Exception:
-    return None
+        return None   # <-- отступ ровно 8 пробелов (или одна табуляция, если везде табы)
 
 def save_history_to_disk(history, vin_code):
     sheet = _get_gsheet()

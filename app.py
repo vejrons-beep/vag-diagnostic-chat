@@ -533,8 +533,8 @@ with st.sidebar:
         st.session_state.uploaded_image_key += 1
         clear_history_on_disk()
         st.rerun()
-       
-        if st.button("🚪 Выйти"):
+
+    if st.button("🚪 Выйти"):
         # Удаляем параметр auth из URL, если он есть
         if "auth" in st.query_params:
             st.query_params.clear()

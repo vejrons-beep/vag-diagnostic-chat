@@ -839,7 +839,7 @@ if audio_file is not None:
             help="💡 Автоподстановка из CSV-лога VCDS (если загружен). Иначе введите вручную по тахометру на видео. Для CFNA на ХХ ≈ 840 об/мин."
         )
     
-        if st.button("🔊 Запустить акустический анализ", key="run_audio_analysis"):
+    if st.button("🔊 Запустить акустический анализ", key="run_audio_analysis"):
         with st.spinner("Анализирую звук... Это может занять 10-20 секунд"):
             try:
                 from audio_engine_diagnosis import analyze_engine_audio
@@ -959,6 +959,9 @@ if audio_file is not None:
                 st.info("Установите: pip install librosa soundfile scipy matplotlib")
             except Exception as e:
                 st.error(f"❌ Ошибка: {e}")
+
+# --- ЧАТ-ВВОД ---
+
 # --- ЧАТ-ВВОД ---
 if user_input := st.chat_input("Напишите симптомы или задайте вопрос..."):
     if not API_KEY:

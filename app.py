@@ -839,7 +839,7 @@ if audio_file is not None:
             help="💡 Автоподстановка из CSV-лога VCDS (если загружен). Иначе введите вручную по тахометру на видео. Для CFNA на ХХ ≈ 840 об/мин."
         )
     
-    if st.button("🔊 Запустить акустический анализ", key="run_audio_analysis"):
+        if st.button("🔊 Запустить акустический анализ", key="run_audio_analysis"):
         with st.spinner("Анализирую звук... Это может занять 10-20 секунд"):
             try:
                 from audio_engine_diagnosis import analyze_engine_audio
@@ -904,110 +904,61 @@ if audio_file is not None:
                     # Отправка в Gemini
                     st.subheader("🤖 Экспертный анализ Gemini")
                     
-                               if st.button("👁️ Отправить спектрограмму в Gemini", key="send_audio_to_gemini"):
-                if not API_KEY:
-                    st.error("API-ключ не найден!")
-                else:
-                    try:
-                        spec_path = result.get("spectrogram_path")
-                        if not spec_path or not os.path.exists(spec_path):
-                            st.error("❌ Файл спектрограммы не найден. Попробуйте повторить анализ.")
+                    if st.button("👁️ Отправить спектрограмму в Gemini", key="send_audio_to_gemini"):
+                        if not API_KEY:
+                            st.error("API-ключ не найден!")
                         else:
-                            with open(spec_path, "rb") as img_f:
-                                img_b64 = base64.b64encode(img_f.read()).decode()
-                            img_data = f"data:image/png;base64,{img_b64}"
-
-                            # Формируем system prompt с аудио-контекстом
-                            sys_prompt = get_system_prompt(
-                                st.session_state.diagnostic_mode,
-                                st.session_state.is_base_trim,
-                                mods=st.session_state.mods
-                            )
-                            sys_prompt += "\n\nДополнительно: ты анализируешь спектрограмму звука мотора CFNA. Ищи импульсные пики на гармониках оборотов — это механические стуки (цепь, клапаны, пальцы). Постоянный гармонический гул — навесное оборудование (помпа, генератор, ролики). Учитывай температуру мотора и наличие ГБО."
-
-                            messages = [
-                                {"role": "system", "content": [{"type": "text", "text": sys_prompt}]},
-                                {"role": "user", "content": [
-                                    {"type": "text", "text": result["prompt_for_gemini"]},
-                                    {"type": "image_url", "image_url": {"url": img_data}}
-                                ]}
-                            ]
-
-                            with st.spinner("Gemini анализирует спектрограмму..."):
-                                gemini_resp = ask_ai_chat(API_KEY, MODEL_NAME, messages, max_tokens=2500)
-
-                            st.markdown(gemini_resp)
-
-                            # Сохраняем в историю чата
-                            st.session_state.chat_history.append({
-                                "role": "user",
-                                "content": [{"type": "text", "text": f"[Аудио-диагностика] {audio_file.name} | RPM: {rpm_input:.0f} | Темп: {audio_temp}"}]
-                            })
-                            st.session_state.chat_history.append({
-                                "role": "assistant",
-                                "content": [{"type": "text", "text": gemini_resp}]
-                            })
-                            save_chat_history(st.session_state.chat_history)
-
-                    except Exception as e:
-                        st.error(f"❌ Ошибка при отправке в Gemini: {e}")
-                        import traceback
-                        st.code(traceback.format_exc())
-            if not spec_path or not os.path.exists(spec_path):
-                st.error("❌ Файл спектрограммы не найден. Попробуйте повторить анализ.")
-                st.stop()
-
-            with open(spec_path, "rb") as img_f:
-                img_b64 = base64.b64encode(img_f.read()).decode()
-            img_data = f"data:image/png;base64,{img_b64}"
-
-            sys_prompt = get_system_prompt(...)
-            # ... остальная логика отправки ...
-        except Exception as e:
-            st.error(f"❌ Ошибка при отправке в Gemini: {e}")
-            import traceback
-            st.code(traceback.format_exc())
-                                img_b64 = base64.b64encode(img_f.read()).decode()
-                            img_data = f"data:image/png;base64,{img_b64}"
-                            
-                            # Формируем system prompt с аудио-контекстом
-                            sys_prompt = get_system_prompt(
-                                st.session_state.diagnostic_mode,
-                                st.session_state.is_base_trim,
-                                mods=st.session_state.mods
-                            )
-                            sys_prompt += "\n\nДополнительно: ты анализируешь спектрограмму звука мотора CFNA. Ищи импульсные пики на гармониках оборотов — это механические стуки (цепь, клапаны, пальцы). Постоянный гармонический гул — навесное оборудование (помпа, генератор, ролики). Учитывай температуру мотора и наличие ГБО."
-                            
-                            messages = [
-                                {"role": "system", "content": [{"type": "text", "text": sys_prompt}]},
-                                {"role": "user", "content": [
-                                    {"type": "text", "text": result["prompt_for_gemini"]},
-                                    {"type": "image_url", "image_url": {"url": img_data}}
-                                ]}
-                            ]
-                            
-                            with st.spinner("Gemini анализирует спектрограмму..."):
-                                gemini_resp = ask_ai_chat(API_KEY, MODEL_NAME, messages, max_tokens=2500)
-                            
-                            st.markdown(gemini_resp)
-                            
-                            # Сохраняем в историю чата
-                            st.session_state.chat_history.append({
-                                "role": "user",
-                                "content": [{"type": "text", "text": f"[Аудио-диагностика] {audio_file.name} | RPM: {rpm_input:.0f} | Темп: {audio_temp}"}]
-                            })
-                            st.session_state.chat_history.append({
-                                "role": "assistant",
-                                "content": [{"type": "text", "text": gemini_resp}]
-                            })
-                            save_chat_history(st.session_state.chat_history)
+                            try:
+                                spec_path = result.get("spectrogram_path")
+                                if not spec_path or not os.path.exists(spec_path):
+                                    st.error("❌ Файл спектрограммы не найден. Попробуйте повторить анализ.")
+                                else:
+                                    with open(spec_path, "rb") as img_f:
+                                        img_b64 = base64.b64encode(img_f.read()).decode()
+                                    img_data = f"data:image/png;base64,{img_b64}"
+                                    
+                                    # Формируем system prompt с аудио-контекстом
+                                    sys_prompt = get_system_prompt(
+                                        st.session_state.diagnostic_mode,
+                                        st.session_state.is_base_trim,
+                                        mods=st.session_state.mods
+                                    )
+                                    sys_prompt += "\n\nДополнительно: ты анализируешь спектрограмму звука мотора CFNA. Ищи импульсные пики на гармониках оборотов — это механические стуки (цепь, клапаны, пальцы). Постоянный гармонический гул — навесное оборудование (помпа, генератор, ролики). Учитывай температуру мотора и наличие ГБО."
+                                    
+                                    messages = [
+                                        {"role": "system", "content": [{"type": "text", "text": sys_prompt}]},
+                                        {"role": "user", "content": [
+                                            {"type": "text", "text": result["prompt_for_gemini"]},
+                                            {"type": "image_url", "image_url": {"url": img_data}}
+                                        ]}
+                                    ]
+                                    
+                                    with st.spinner("Gemini анализирует спектрограмму..."):
+                                        gemini_resp = ask_ai_chat(API_KEY, MODEL_NAME, messages, max_tokens=2500)
+                                    
+                                    st.markdown(gemini_resp)
+                                    
+                                    # Сохраняем в историю чата
+                                    st.session_state.chat_history.append({
+                                        "role": "user",
+                                        "content": [{"type": "text", "text": f"[Аудио-диагностика] {audio_file.name} | RPM: {rpm_input:.0f} | Темп: {audio_temp}"}]
+                                    })
+                                    st.session_state.chat_history.append({
+                                        "role": "assistant",
+                                        "content": [{"type": "text", "text": gemini_resp}]
+                                    })
+                                    save_chat_history(st.session_state.chat_history)
+                                    
+                            except Exception as e:
+                                st.error(f"❌ Ошибка при отправке в Gemini: {e}")
+                                import traceback
+                                st.code(traceback.format_exc())
                             
             except ImportError as e:
                 st.error(f"❌ Не установлены зависимости: {e}")
                 st.info("Установите: pip install librosa soundfile scipy matplotlib")
             except Exception as e:
                 st.error(f"❌ Ошибка: {e}")
-
 # --- ЧАТ-ВВОД ---
 if user_input := st.chat_input("Напишите симптомы или задайте вопрос..."):
     if not API_KEY:

@@ -52,7 +52,9 @@ def _get_gsheet():
         b64_str = st.secrets["GSPREAD_SERVICE_ACCOUNT_BASE64"]
         creds_json = base64.b64decode(b64_str).decode()
         creds_dict = json.loads(creds_json)
-        creds = Credentials.from_service_account_info(creds_dict)
+        # Указываем область действия (scope) для Google Sheets
+        scopes = ['https://www.googleapis.com/auth/spreadsheets']
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         client = gspread.authorize(creds)
         sheet = client.open_by_url(
             "https://docs.google.com/spreadsheets/d/1ALFMvWYfjJsT_OeLWQRDXIzuvoA-8Xvn9CB5tm8qH1w/edit#gid=0"

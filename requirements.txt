@@ -4,4 +4,3 @@ plotly
 requests
 numpy
 Pillow
-streamlit-sheets-connection

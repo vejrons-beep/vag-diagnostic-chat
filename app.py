@@ -19,7 +19,7 @@ st.set_page_config(page_title="VAG Expert Chat + Vision", page_icon="🚗", layo
 MODEL_NAME = "google/gemini-2.5-flash"
 API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
 
-# --- ПРОВЕРКА ПИН-КОДА (с автоматическим входом через URL) ---
+# --- ПРОВЕРКА ПИН-КОДА (автовход через ?auth=1) ---
 def check_password():
     query_params = st.query_params
     if "auth" in query_params:
@@ -48,7 +48,7 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- ПОДКЛЮЧЕНИЕ К GOOGLE SHEETS (через base64-секрет) ---
+# --- GOOGLE SHEETS (base64-секрет) ---
 def _get_gsheet():
     try:
         b64_str = st.secrets["GSPREAD_SERVICE_ACCOUNT_BASE64"]
@@ -207,17 +207,40 @@ def ask_ai_chat(api_key, model_name, messages, max_tokens=2500):
     except Exception as e:
         return f"Ошибка сети: {e}"
 
-# --- ГЕНЕРАТОР ТЕСТОВЫХ ЛОГОВ (с расширенными датчиками педали/дросселя) ---
+# --- ГЕНЕРАТОР ТЕСТОВЫХ ЛОГОВ ---
 def generate_test_log_df(scenario="normal", diagnostic_mode="Механика (Группы 001-063)", is_base_trim=False, mods=None):
     if mods is None:
         mods = {"tuned": False, "decatted": False, "lpg": False}
     np.random.seed(42)
     time = np.arange(0, 100, 1.0)
     n_points = len(time)
-    if diagnostic_mode.startswith("Электрика"):
-        # ... (CAN-режим без изменений)
-        return pd.DataFrame()
 
+    # --- CAN-режим ---
+    if diagnostic_mode.startswith("Электрика"):
+        missing_val = -1 if is_base_trim else 1
+        akpp = np.ones(n_points) if not is_base_trim else np.full(n_points, -1)
+        abs_block = np.ones(n_points) if not is_base_trim else np.full(n_points, -1)
+        klimat = np.ones(n_points) if not is_base_trim else np.full(n_points, -1)
+        if scenario == "can_loss_abs" and not is_base_trim:
+            abs_block = np.zeros(n_points)
+        elif scenario == "immo_conflict":
+            priborka = np.random.choice([0, 1], p=[0.8, 0.2], size=n_points)
+        else:
+            priborka = np.ones(n_points)
+        srs_block = np.ones(n_points)
+        fan = np.zeros(n_points)
+        df = pd.DataFrame({
+            "Отметка Времени (сек)": time,
+            "АКПП (Группа 125-1)": akpp,
+            "АБС (Группа 125-2)": abs_block,
+            "Приборка (Группа 125-3)": priborka if 'priborka' in locals() else np.ones(n_points),
+            "SRS (Группа 125-4)": srs_block,
+            "Климат (Группа 126-1)": klimat,
+            "Запрос Вентилятора % (Группа 135-1)": fan
+        })
+        return df
+
+    # --- Механика ---
     rpm = 840 + np.random.normal(0, 8, n_points)
     coolant_temp = np.clip(20.0 + time * 0.7, 20.0, 90.0)
     iat = np.clip(25.0 + np.random.normal(0, 2, n_points) + time * 0.1, 5.0, 70.0)
@@ -226,7 +249,10 @@ def generate_test_log_df(scenario="normal", diagnostic_mode="Механика (�
     injector = 2.25 + np.random.normal(0, 0.04, n_points)
     stft = np.random.normal(0, 1.0, n_points)
     ltft = np.zeros(n_points) + 0.8
-    misfire_c1 = misfire_c2 = misfire_c3 = misfire_c4 = np.zeros(n_points)
+    misfire_c1 = np.zeros(n_points)
+    misfire_c2 = np.zeros(n_points)
+    misfire_c3 = np.zeros(n_points)
+    misfire_c4 = np.zeros(n_points)
     total_misfires = misfire_c1 + misfire_c2 + misfire_c3 + misfire_c4
     misfire_status = np.ones(n_points)
     # Датчики дросселя и педали (реалистичные кривые)
@@ -247,7 +273,7 @@ def generate_test_log_df(scenario="normal", diagnostic_mode="Механика (�
     cat_conversion = np.random.normal(0.2, 0.1, n_points)
     cat_status = np.ones(n_points)
     o2_voltage = np.random.normal(1.50, 0.05, n_points)
-    adaptation_status = np.full(n_points, "ADP. OK")  # статус адаптации
+    adaptation_status = np.full(n_points, "ADP. OK")
 
     if mods.get("decatted", False):
         cat_status = np.full(n_points, -1)
@@ -281,7 +307,7 @@ def generate_test_log_df(scenario="normal", diagnostic_mode="Механика (�
         stft = 15.2 + np.random.normal(0, 1.2, n_points)
         ltft = np.ones(n_points) + 6.5
         uoz = np.random.normal(7.0, 1.5, n_points)
-        throttle = np.random.normal(1.0, 0.2, n_points)  # дроссель почти закрыт из-за подсоса
+        throttle = np.random.normal(1.0, 0.2, n_points)
         g187 = throttle
         g188 = 100.0 - g187 + np.random.normal(0, 0.3, n_points)
         phase_position = -4.5 + np.random.normal(0, 0.3, n_points)
@@ -290,10 +316,60 @@ def generate_test_log_df(scenario="normal", diagnostic_mode="Механика (�
         misfire_c3 = np.random.choice([0,1], p=[0.95,0.05], size=n_points)
         misfire_c4 = np.random.choice([0,1], p=[0.95,0.05], size=n_points)
         o2_voltage = np.clip(1.50 + stft * 0.02, 1.0, 2.5)
-    # ... остальные сценарии аналогичны предыдущим версиям ...
+    elif scenario == "rich":
+        map_vals = 300.0 + np.random.normal(0, 5, n_points)
+        injector = 1.85 + np.random.normal(0, 0.03, n_points)
+        stft = -18.5 + np.random.normal(0, 1.0, n_points)
+        ltft = np.ones(n_points) - 9.0
+        cat_conversion = np.random.normal(0.7, 0.2, n_points)
+        o2_voltage = np.clip(1.50 + stft * 0.02, 1.0, 2.5)
+    elif scenario == "fuel_pump_death":
+        rpm = np.linspace(840, 4500, n_points)
+        map_vals = np.linspace(300.0, 850.0, n_points)
+        injector = np.linspace(2.5, 4.8, n_points)
+        stft = np.linspace(2.0, 24.0, n_points)
+        ltft = np.ones(n_points) + 8.5
+        g79 = np.linspace(14.0, 70.0, n_points)
+        g185 = g79 / 2.0
+        g187 = np.linspace(7.0, 60.0, n_points)
+        g188 = 100.0 - g187 + np.random.normal(0, 0.3, n_points)
+        throttle = g187
+        misfire_c1 = np.clip(np.cumsum(np.random.choice([0,1], p=[0.9,0.1], size=n_points)), 0, 10)
+        misfire_c4 = np.clip(np.cumsum(np.random.choice([0,1], p=[0.9,0.1], size=n_points)), 0, 10)
+        uoz = np.clip(np.linspace(15, 30, n_points) + np.random.normal(0, 2, n_points), 10, 35)
+        knock_all = np.clip(np.linspace(0.0, 5.0, n_points) + np.random.normal(0, 0.5, n_points), 0.0, 7.0)
+        knock_c1 = knock_c2 = knock_c3 = knock_c4 = knock_all
+        dd_base = 0.5 + (rpm - 840) / 5000 * 2.5 + 0.1
+        dd_c1 = dd_base + np.random.normal(0, 0.05, n_points)
+        dd_c2 = dd_base + np.random.normal(0, 0.05, n_points)
+        dd_c3 = dd_base + np.random.normal(0, 0.05, n_points)
+        dd_c4 = dd_base + np.random.normal(0, 0.05, n_points)
+        cat_conversion = np.linspace(0.4, 0.8, n_points)
+        iat = np.clip(30.0 + time * 0.8, 5.0, 100.0)
+        o2_voltage = np.clip(1.50 + stft * 0.02, 1.0, 2.5)
+    elif scenario == "misfire_coil":
+        misfire_c2 = np.clip(np.cumsum(np.random.choice([0,1,2], p=[0.7,0.2,0.1], size=n_points)), 0, 45)
+        stft = np.linspace(0, 12.0, n_points)
+        knock_c2 = np.clip(np.random.normal(4.0, 1.0, n_points), 2.0, 7.0)
+        dd_c2 = dd_base + 0.4 + np.random.normal(0, 0.1, n_points)
+        o2_heater_resistance = np.full(n_points, 99.9)
+        o2_voltage = np.clip(1.50 + stft * 0.02, 1.0, 2.5)
+    elif scenario == "compression_loss":
+        rpm = np.concatenate([np.ones(50)*840, np.linspace(840, 2500, 50)])
+        map_vals = np.concatenate([np.ones(50)*375.0, np.linspace(375.0, 500.0, 50)])
+        misfire_c4 = np.concatenate([np.cumsum(np.random.choice([0,1], p=[0.5,0.5], size=50)), np.ones(50)*25])
+        uoz = np.concatenate([np.random.normal(6.0, 2.0, 50), np.clip(np.linspace(10, 20, 50), 5, 25)])
+        g187 = np.concatenate([np.random.normal(7.0, 1.0, 50), np.linspace(10, 25, 50)])
+        g188 = 100.0 - g187 + np.random.normal(0, 0.3, n_points)
+        throttle = g187
+        dd_c4[:50] = 1.3 + np.random.normal(0, 0.1, 50)
+        phase_position = -6.0 + np.random.normal(0, 0.5, n_points)
+        cat_conversion[:50] = 0.7
+        iat = np.concatenate([np.random.normal(55, 3, 50), np.linspace(55, 35, 50)])
+        o2_voltage = np.concatenate([np.random.normal(1.50, 0.05, 50), np.random.normal(1.60, 0.1, 50)])
 
-    # Суммарные пропуски и общий DataFrame
     total_misfires = misfire_c1 + misfire_c2 + misfire_c3 + misfire_c4
+
     df = pd.DataFrame({
         "Время (сек)": time,
         "Обороты (об/мин)": np.round(rpm, 0),
@@ -334,7 +410,7 @@ def generate_test_log_df(scenario="normal", diagnostic_mode="Механика (�
     })
     return df
 
-# --- ДИНАМИЧЕСКИЙ СИСТЕМНЫЙ ПРОМПТ (обновлены группы 062/063) ---
+# --- ДИНАМИЧЕСКИЙ СИСТЕМНЫЙ ПРОМПТ (с анти-галлюцинационным фильтром) ---
 def get_system_prompt(mode="Механика (Группы 001-063)", is_base_trim=False, ecu_type="Magneti Marelli 7GV", mods=None):
     if mods is None:
         mods = {"tuned": False, "decatted": False, "lpg": False}
@@ -342,6 +418,19 @@ def get_system_prompt(mode="Механика (Группы 001-063)", is_base_tr
     base_prompt = f"""Ты — профессиональный автодиагност концерна VAG (уровень дилерского центра), специализирующийся на работе с логами VCDS (Вася Диагност).
 Текущий блок управления двигателем: {ecu_type}.
 Твоя задача — анализировать логи и выдавать точные технические диагнозы по базе параметров.
+"""
+    # --- БЛОК ЗАЩИТЫ ОТ ГАЛЛЮЦИНАЦИЙ ---
+    anti_hallucination_filter = """
+[🚨] КРИТИЧЕСКОЕ ОГРАНИЧЕНИЕ АРХИТЕКТУРЫ ДВИГАТЕЛЯ:
+Двигатель CFNA 1.6 — это исключительно атмосферный бензиновый мотор с обычным РАСПРЕДЕЛЕННЫМ впрыском (MPI).
+ТЕБЕ КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО упоминать, рекомендовать к проверке или использовать в диагностике следующие сущности:
+1. ТНВД и датчики высокого давления (никаких упоминаний систем TSI/TFSI/FSI). Группа 106 на этом моторе неинформативна.
+2. Турбины, интеркулеры, вестгейты, байпасы и давление наддува (мотор атмосферный).
+3. Дизельные форсунки, системы Common Rail, ТНВД дизеля, балансировку цилиндров (никаких групп 013, 072-077).
+4. Фазорегуляторы, клапаны N205, муфты VVT и цепи с изменяемыми фазами (здесь жесткие фиксированные звезды, группы 091-092 отсутствуют).
+5. Датчики массового расхода воздуха (ДМРВ / MAF) — воздух считается строго по ДАД (MAP, группа 002).
+
+Если ты зафиксируешь пропуски, детонацию или бедную смесь, ты обязан предлагать проверку ТОЛЬКО тех узлов и групп (из списка 15 групп), которые физически существуют на данном CFNA. За предложение проверить ТНВД, ДМРВ или Фазорегулятор на этом моторе твой диагноз будет аннулирован.
 """
     config_note = ""
     if is_base_trim:
@@ -453,11 +542,11 @@ def get_system_prompt(mode="Механика (Группы 001-063)", is_base_tr
     common_rules = "\nОБЩИЕ ПРАВИЛА: Отвечай профессионально, структурированно. Учитывай модификации и комплектацию."
 
     if mode.startswith("Электрика"):
-        return base_prompt + config_note + mods_note + can_rules + common_rules
+        return base_prompt + anti_hallucination_filter + config_note + mods_note + can_rules + common_rules
     else:
-        return base_prompt + config_note + mods_note + mechanics_rules + common_rules
+        return base_prompt + anti_hallucination_filter + config_note + mods_note + mechanics_rules + common_rules
 
-# --- ИНИЦИАЛИЗАЦИЯ СОСТОЯНИЙ (reference_map дополнен) ---
+# --- ИНИЦИАЛИЗАЦИЯ СОСТОЯНИЙ ---
 saved_history, saved_vin = load_history_from_disk()
 if "is_base_trim" not in st.session_state:
     st.session_state.is_base_trim = True
@@ -495,7 +584,7 @@ if "reference_map" not in st.session_state:
         "Сопротивление Зонда 1 (Ом)": (2.0, 15.0, "green", "red"),
         "Конверсия катализатора": (0.0, 0.45, "green", "red"),
         "Напряжение Зонда 1 (В)": (1.10, 2.10, "green", "red"),
-        "Датчик дросселя 1 (G187) %": (3.0, 97.0, "green", "red"),  # полный диапазон
+        "Датчик дросселя 1 (G187) %": (3.0, 97.0, "green", "red"),
         "Педаль газа 1 (G79) %": (12.0, 94.0, "green", "red"),
     }
 if "generated_log_df" not in st.session_state:
@@ -503,22 +592,19 @@ if "generated_log_df" not in st.session_state:
 if "uploaded_image_key" not in st.session_state:
     st.session_state.uploaded_image_key = 0
 
-# --- БОКОВАЯ ПАНЕЛЬ (без изменений) ---
+# --- БОКОВАЯ ПАНЕЛЬ ---
 with st.sidebar:
     st.header("⚙️ Конфигурация автомобиля")
     st.write("Настройте параметры машины для точной работы ИИ.")
     st.markdown("---")
-
     st.subheader("📦 Комплектация")
     st.session_state.is_base_trim = st.checkbox(
         "Базовая комплектация (CFNA BASE)",
         value=st.session_state.is_base_trim,
         help="МКПП, без кондиционера, без ABS. ИИ сузит допуски MAP до 315 мбар и проигнорирует отсутствие блоков по CAN."
     )
-
     st.markdown("---")
     st.subheader("🛠️ Модификации и тюнинг")
-
     decatted = st.checkbox(
         "Катализатор удален (Евро-2)",
         value=st.session_state.mods.get("decatted", False),
@@ -534,9 +620,7 @@ with st.sidebar:
         value=st.session_state.mods.get("tuned", False),
         help="ИИ сделает скидку на более ранние углы зажигания (УОЗ) и повышенное время впрыска под нагрузкой."
     )
-
     st.session_state.mods = {"tuned": tuned, "decatted": decatted, "lpg": lpg}
-
     st.markdown("---")
     st.subheader("🔍 Режим диагностики")
     st.session_state.diagnostic_mode = st.radio(
@@ -544,11 +628,9 @@ with st.sidebar:
         ["Механика (Группы 001-063)", "Электрика и CAN (Группы 125-135)"],
         index=0 if st.session_state.diagnostic_mode.startswith("Механика") else 1
     )
-
     if st.session_state.get("vin_code"):
         st.markdown("---")
         st.info(f"🆔 **Распознанный VIN:**\n`{st.session_state.vin_code}`")
-
     st.markdown("---")
     st.subheader("🧪 Симулятор")
     if st.session_state.diagnostic_mode.startswith("Электрика"):
@@ -574,7 +656,6 @@ with st.sidebar:
             "Потеря компрессии (Цил 4 на ХХ)": "compression_loss",
             "Умирающий бензонасос": "fuel_pump_death"
         }
-
     if st.button("⚡ Сгенерировать лог"):
         st.session_state.generated_log_df = generate_test_log_df(
             mapping[test_scenario],
@@ -583,7 +664,6 @@ with st.sidebar:
             mods=st.session_state.mods
         )
         st.rerun()
-
     st.markdown("---")
     if st.button("🗑️ Очистить историю"):
         st.session_state.chat_history = [
@@ -598,7 +678,6 @@ with st.sidebar:
         st.session_state.uploaded_image_key += 1
         clear_history_on_disk()
         st.rerun()
-
     if st.button("🚪 Выйти"):
         if "auth" in st.query_params:
             st.query_params.clear()
@@ -607,9 +686,8 @@ with st.sidebar:
         st.session_state.authenticated = False
         st.rerun()
 
-# --- ОСНОВНОЙ ЭКРАН (без изменений) ---
+# --- ОСНОВНОЙ ЭКРАН ---
 st.title("VAG Expert Chat + Vision 💬")
-
 for msg in st.session_state.chat_history:
     if msg["role"] != "system":
         with st.chat_message(msg["role"]):
@@ -626,10 +704,8 @@ uploaded_file = st.file_uploader(
     type=["csv","txt","png","jpg","jpeg"],
     key=f"file_uploader_{st.session_state.uploaded_image_key}"
 )
-
 log_df = None
 image_base64 = None
-
 if uploaded_file is not None:
     if "text" in uploaded_file.type or "csv" in uploaded_file.type:
         file_bytes = uploaded_file.read()
@@ -641,7 +717,6 @@ if uploaded_file is not None:
     elif "image" in uploaded_file.type:
         image_base64 = encode_image_to_base64(uploaded_file)
         st.image(uploaded_file, caption="Превью скриншота VCDS", width=400)
-
 if uploaded_file is None and st.session_state.generated_log_df is not None:
     log_df = st.session_state.generated_log_df
 
@@ -649,7 +724,6 @@ if uploaded_file is None and st.session_state.generated_log_df is not None:
 if log_df is not None and not log_df.empty:
     st.success("📊 Данные лога успешно распознаны.")
     time_col = log_df.columns[0]
-
     with st.expander("📊 Посмотреть график параметров", expanded=True):
         if st.session_state.diagnostic_mode.startswith("Электрика"):
             selected_cols = [c for c in log_df.columns if "АКПП" in c or "АБС" in c or "Приборка" in c or "SRS" in c]
@@ -664,7 +738,8 @@ if log_df is not None and not log_df.empty:
                              or "Пропуски" in c or "Откат" in c or "G187" in c or "G79" in c
                              or "Угол опережения" in c or "Угол дросселя" in c or "Напряжение ДД" in c
                              or "Температура ОЖ" in c or "Температура впуска" in c or "Фазовое положение" in c
-                             or "Сопротивление Зонда" in c or "Конверсия катализатора" in c]
+                             or "Сопротивление Зонда" in c or "Конверсия катализатора" in c
+                             or "Напряжение Зонда" in c or "Датчик дросселя" in c or "Педаль газа" in c]
             if selected_cols:
                 fig = go.Figure()
                 for col in selected_cols:
@@ -738,7 +813,6 @@ if user_input := st.chat_input("Напишите симптомы или зад�
     else:
         with st.chat_message("user"):
             st.write(user_input)
-
         mods = st.session_state.mods
         mods_list = []
         if mods["tuned"]: mods_list.append("Сделан Чип-тюнинг")
@@ -747,18 +821,14 @@ if user_input := st.chat_input("Напишите симптомы или зад�
         mods_str = ", ".join(mods_list) if mods_list else "Сток (без модификаций)"
         vin_str = st.session_state.vin_code if st.session_state.vin_code else "Не указан"
         base_str = "Да" if st.session_state.is_base_trim else "Нет"
-
         ai_text = (f"[Контекст VCDS - VIN: {vin_str}. Моды: {mods_str}. Базовая компл.: {base_str}] {user_input}")
-
         st.session_state.chat_history.append({"role": "user", "content": [{"type": "text", "text": user_input}]})
         temp_history = copy.deepcopy(st.session_state.chat_history)
         temp_history[-1]["content"][0]["text"] = ai_text
-
         with st.chat_message("assistant"):
             with st.spinner("Думаю..."):
                 response = ask_ai_chat(API_KEY, MODEL_NAME, temp_history, max_tokens=1500)
                 st.write(response)
-
         st.session_state.chat_history.append({"role": "assistant", "content": [{"type": "text", "text": response}]})
         save_history_to_disk(st.session_state.chat_history, st.session_state.vin_code)
         st.rerun()

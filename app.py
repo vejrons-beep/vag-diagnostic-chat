@@ -75,14 +75,18 @@ def save_history_to_disk(history, vin_code):
 def load_history_from_disk():
     sheet = _get_gsheet()
     if sheet is None:
+        st.warning("⚠️ Не удалось подключиться к Google Sheets при загрузке истории.")
         return [], ""
     try:
         data_str = sheet.acell("A1").value
         if data_str:
             data = json.loads(data_str)
+            st.success("✅ История загружена из облака.")
             return data.get("chat_history", []), data.get("vin_code", "")
-    except Exception:
-        return [], ""
+        else:
+            st.info("ℹ️ Ячейка пуста, начинаем новую историю.")
+    except Exception as e:
+        st.error(f"❌ Ошибка загрузки истории: {e}")
     return [], ""
 
 def clear_history_on_disk():

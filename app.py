@@ -1,6 +1,6 @@
 """
 app.py — VAG Expert Chat + Vision
-Исправленная версия: защита от падений на Streamlit Cloud
+Исправленная версия: чат внизу, графики наверху
 """
 
 import streamlit as st
@@ -17,7 +17,6 @@ import copy
 from PIL import Image
 import numpy as np
 
-# Опциональные импорты — с защитой от отсутствия
 try:
     import gspread
     from google.oauth2.service_account import Credentials
@@ -25,7 +24,6 @@ try:
 except ImportError:
     GSPREAD_AVAILABLE = False
 
-# Импорт наших модулей
 try:
     from config import (
         MODEL_NAME, API_KEY, 
@@ -52,7 +50,6 @@ st.set_page_config(page_title="VAG Expert Chat + Vision", page_icon="🚗", layo
 
 
 # ==================== API КЛЮЧ ====================
-# Пробуем st.secrets, потом os.environ, потом пустую строку
 API_KEY = ""
 try:
     API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
@@ -64,10 +61,9 @@ if not API_KEY:
 MODEL_NAME = "google/gemini-2.5-flash"
 
 
-# ==================== АУТЕНТИФИКАЦИЯ (с защитой) ====================
+# ==================== АУТЕНТИФИКАЦИЯ ====================
 
 def check_password():
-    """Проверка пин-кода с защитой от ошибок Streamlit Cloud."""
     try:
         query_params = st.query_params
         if "auth" in query_params:
@@ -111,7 +107,7 @@ if not check_password():
     st.stop()
 
 
-# ==================== GOOGLE SHEETS (с fallback) ====================
+# ==================== GOOGLE SHEETS ====================
 
 def _get_gsheet():
     if not GSPREAD_AVAILABLE:
@@ -399,23 +395,14 @@ with st.sidebar:
         st.rerun()
 
 
-# ==================== ОСНОВНОЙ ЭКРАН ====================
+# ============================================================
+# ОСНОВНОЙ ЭКРАН — ПРАВИЛЬНЫЙ ПОРЯДОК
+# ============================================================
 
 st.title("VAG Expert Chat + Vision 💬")
 
-for msg in st.session_state.chat_history:
-    if msg["role"] != "system":
-        with st.chat_message(msg["role"]):
-            for content_item in msg["content"]:
-                if content_item["type"] == "text":
-                    st.write(content_item["text"])
-                elif content_item["type"] == "image_url":
-                    st.image(content_item["image_url"]["url"], width=300)
 
-st.markdown("---")
-
-
-# ==================== ЗАГРУЗКА ДАННЫХ ====================
+# ==================== ЗАГРУЗКА ДАННЫХ (НАВЕРХУ) ====================
 
 st.subheader("📁 Загрузка данных")
 
@@ -446,7 +433,7 @@ if uploaded_file is None and st.session_state.generated_log_df is not None:
     log_df = st.session_state.generated_log_df
 
 
-# ==================== ГРАФИКИ ====================
+# ==================== ГРАФИКИ (НАВЕРХУ) ====================
 
 if log_df is not None and not log_df.empty:
     st.success("📊 Данные лога распознаны (режим: бензин)")
@@ -524,7 +511,7 @@ if log_df is not None and not log_df.empty:
             st.rerun()
 
 
-# ==================== СКРИНШОТ VCDS ====================
+# ==================== СКРИНШОТ VCDS (НАВЕРХУ) ====================
 
 if image_base64 is not None:
     st.success("🖼️ Скриншот готов")
@@ -558,7 +545,7 @@ if image_base64 is not None:
             st.rerun()
 
 
-# ==================== АУДИО/ВИДЕО ДИАГНОСТИКА ====================
+# ==================== АУДИО/ВИДЕО ДИАГНОСТИКА (СЕРЕДИНА) ====================
 
 st.markdown("---")
 st.subheader("🎙️ Аудио/Видео диагностика мотора")
@@ -687,21 +674,38 @@ else:
                     st.error(f"❌ Ошибка: {e}")
 
 
-# ==================== ЧАТ-ВВОД ====================
+# ==================== ЧАТ (ВНИЗУ) ====================
 
+st.markdown("---")
+st.subheader("💬 Чат с диагностом")
+
+# Отображение истории чата
+for msg in st.session_state.chat_history:
+    if msg["role"] != "system":
+        with st.chat_message(msg["role"]):
+            for content_item in msg["content"]:
+                if content_item["type"] == "text":
+                    st.write(content_item["text"])
+                elif content_item["type"] == "image_url":
+                    st.image(content_item["image_url"]["url"], width=300)
+
+# Ввод сообщения — ВСЕГДА внизу
 if user_input := st.chat_input("Напиши симптомы или задай вопрос..."):
     if not API_KEY:
         st.error("API-ключ не найден! Добавь OPENROUTER_API_KEY в Secrets (Settings → Secrets).")
     else:
+        # Сразу показываем сообщение пользователя
         with st.chat_message("user"):
             st.write(user_input)
 
+        # Проверяем VIN
         vin_match = re.search(r'\b([A-HJ-NPR-Z0-9]{17})\b', user_input, re.IGNORECASE)
         if vin_match and vin_match.group(1).upper() != st.session_state.vin_code:
             st.session_state.vin_code = vin_match.group(1).upper()
             save_profile(st.session_state.vin_code, st.session_state.is_base_trim, st.session_state.mods)
             st.sidebar.info(f"📍 VIN обновлён: {st.session_state.vin_code}")
 
+        # Формируем контекст
         mods = st.session_state.mods
         mods_list = []
         if mods["tuned"]: mods_list.append("Чип-тюнинг")
@@ -713,11 +717,14 @@ if user_input := st.chat_input("Напиши симптомы или задай 
 
         ai_text = f"[Контекст: VIN={vin_str}, Компл={base_str}, Моды={mods_str}] {user_input}"
 
+        # Добавляем в историю
         st.session_state.chat_history.append({"role": "user", "content": [{"type": "text", "text": user_input}]})
 
+        # Формируем messages для API
         temp_history = copy.deepcopy(st.session_state.chat_history)
         temp_history[-1]["content"][0]["text"] = ai_text
 
+        # Сразу показываем ответ ассистента
         with st.chat_message("assistant"):
             with st.spinner("Думаю..."):
                 response = ask_ai_chat(API_KEY, MODEL_NAME, temp_history, max_tokens=1500)

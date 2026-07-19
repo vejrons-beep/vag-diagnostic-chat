@@ -801,6 +801,7 @@ if image_base64 is not None:
 # ============================================================
 st.markdown("---")
 st.subheader("🎙️ Аудио/Видео диагностика мотора")
+st.caption("📹 Запишите 5–10 секунд работы мотора. Для точности загрузите также CSV-лог VCDS — RPM подтянутся автоматически.")
 
 audio_file = st.file_uploader(
     "Загрузите видео или аудио записи работы мотора",
@@ -834,7 +835,8 @@ if audio_file is not None:
             min_value=0.0,
             max_value=8000.0,
             step=10.0,
-            key="audio_rpm_input"
+            key="audio_rpm_input",
+            help="💡 Автоподстановка из CSV-лога VCDS (если загружен). Иначе введите вручную по тахометру на видео. Для CFNA на ХХ ≈ 840 об/мин."
         )
     
     if st.button("🔊 Запустить акустический анализ", key="run_audio_analysis"):

@@ -905,10 +905,25 @@ if audio_file is not None:
                     st.subheader("🤖 Экспертный анализ Gemini")
                     
                     if st.button("👁️ Отправить спектрограмму в Gemini", key="send_audio_to_gemini"):
-                        if not API_KEY:
-                            st.error("API-ключ не найден!")
-                        else:
-                            with open(result["spectrogram_path"], "rb") as img_f:
+    if not API_KEY:
+        st.error("API-ключ не найден!")
+    else:
+        try:
+            spec_path = result.get("spectrogram_path")
+            if not spec_path or not os.path.exists(spec_path):
+                st.error("❌ Файл спектрограммы не найден. Попробуйте повторить анализ.")
+                st.stop()
+
+            with open(spec_path, "rb") as img_f:
+                img_b64 = base64.b64encode(img_f.read()).decode()
+            img_data = f"data:image/png;base64,{img_b64}"
+
+            sys_prompt = get_system_prompt(...)
+            # ... остальная логика отправки ...
+        except Exception as e:
+            st.error(f"❌ Ошибка при отправке в Gemini: {e}")
+            import traceback
+            st.code(traceback.format_exc())
                                 img_b64 = base64.b64encode(img_f.read()).decode()
                             img_data = f"data:image/png;base64,{img_b64}"
                             

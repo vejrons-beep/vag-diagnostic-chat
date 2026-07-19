@@ -822,7 +822,6 @@ if audio_file is not None:
         )
         temp_map = {"Холодный": "cold", "Прогретый": "warm", "Горячий": "hot"}
         
-        # RPM из лога если есть, иначе дефолт 840
         rpm_default = 840.0
         if log_df is not None and not log_df.empty:
             rpm_col = [c for c in log_df.columns if "Обороты" in c or "RPM" in c.upper()]
@@ -856,7 +855,6 @@ if audio_file is not None:
                 else:
                     st.success("✅ Акустический анализ завершён")
                     
-                    # Спектрограмма
                     if result.get("spectrogram_path") and os.path.exists(result["spectrogram_path"]):
                         st.image(
                             result["spectrogram_path"],
@@ -864,7 +862,6 @@ if audio_file is not None:
                             use_container_width=True
                         )
                     
-                    # Спектр-плот
                     if result.get("spectrum_plot_path") and os.path.exists(result["spectrum_plot_path"]):
                         st.image(
                             result["spectrum_plot_path"],
@@ -872,7 +869,6 @@ if audio_file is not None:
                             use_container_width=True
                         )
                     
-                    # Локальные результаты
                     st.subheader("📊 Локальный анализ")
                     
                     with st.expander("Сырые акустические признаки"):
@@ -901,35 +897,28 @@ if audio_file is not None:
                     else:
                         st.info("Локальный анализ не выявил характерных паттернов. Звук в пределах нормы или требует экспертной оценки.")
                     
-                    # Отправка в Gemini
                     st.subheader("🤖 Экспертный анализ Gemini")
                     
-                                        if st.button("👁️ Отправить спектрограмму в Gemini", key="send_audio_to_gemini"):
-                        st.write("Кнопка нажата. Проверяю API-ключ...")
+                    if st.button("👁️ Отправить спектрограмму в Gemini", key="send_audio_to_gemini"):
                         if not API_KEY:
                             st.error("API-ключ не найден!")
                         else:
-                            st.write("API-ключ найден. Ищу спектрограмму...")
-                            spec_path = result.get("spectrogram_path")
-                            if not spec_path:
-                                st.error("В результате анализа нет пути к спектрограмме.")
-                            elif not os.path.exists(spec_path):
-                                st.error(f"Файл спектрограммы не найден по пути: {spec_path}")
-                            else:
-                                st.write(f"Спектрограмма найдена: {spec_path}")
-                                try:
+                            try:
+                                spec_path = result.get("spectrogram_path")
+                                if not spec_path or not os.path.exists(spec_path):
+                                    st.error("❌ Файл спектрограммы не найден. Попробуйте повторить анализ.")
+                                else:
                                     with open(spec_path, "rb") as img_f:
                                         img_b64 = base64.b64encode(img_f.read()).decode()
                                     img_data = f"data:image/png;base64,{img_b64}"
-                                    st.write("Изображение закодировано. Формирую промпт...")
-
+                                    
                                     sys_prompt = get_system_prompt(
                                         st.session_state.diagnostic_mode,
                                         st.session_state.is_base_trim,
                                         mods=st.session_state.mods
                                     )
                                     sys_prompt += "\n\nДополнительно: ты анализируешь спектрограмму звука мотора CFNA. Ищи импульсные пики на гармониках оборотов — это механические стуки (цепь, клапаны, пальцы). Постоянный гармонический гул — навесное оборудование (помпа, генератор, ролики). Учитывай температуру мотора и наличие ГБО."
-
+                                    
                                     messages = [
                                         {"role": "system", "content": [{"type": "text", "text": sys_prompt}]},
                                         {"role": "user", "content": [
@@ -937,13 +926,12 @@ if audio_file is not None:
                                             {"type": "image_url", "image_url": {"url": img_data}}
                                         ]}
                                     ]
-
-                                    st.write("Отправляю запрос в Gemini...")
+                                    
                                     with st.spinner("Gemini анализирует спектрограмму..."):
                                         gemini_resp = ask_ai_chat(API_KEY, MODEL_NAME, messages, max_tokens=2500)
-                                    st.write("Ответ получен!")
+                                    
                                     st.markdown(gemini_resp)
-
+                                    
                                     st.session_state.chat_history.append({
                                         "role": "user",
                                         "content": [{"type": "text", "text": f"[Аудио-диагностика] {audio_file.name} | RPM: {rpm_input:.0f} | Темп: {audio_temp}"}]
@@ -953,12 +941,11 @@ if audio_file is not None:
                                         "content": [{"type": "text", "text": gemini_resp}]
                                     })
                                     save_chat_history(st.session_state.chat_history)
-                                    st.success("Результат сохранён в историю.")
-
-                                except Exception as e:
-                                    st.error(f"❌ Ошибка: {e}")
-                                    import traceback
-                                    st.code(traceback.format_exc())
+                                    
+                            except Exception as e:
+                                st.error(f"❌ Ошибка при отправке в Gemini: {e}")
+                                import traceback
+                                st.code(traceback.format_exc())
                             
             except ImportError as e:
                 st.error(f"❌ Не установлены зависимости: {e}")

@@ -1,571 +1,728 @@
 """
-audio_engine_diagnosis.py — Акустическая диагностика двигателя CFNA 1.6 MPI
-Исправленная версия: утечки памяти, точные частоты, интеграция с Gemini
+app.py — VAG Expert Chat + Vision
+Исправленная версия: защита от падений на Streamlit Cloud
 """
 
-import numpy as np
-import librosa
-import librosa.display
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import os
-import tempfile
-import subprocess
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import requests
+import json
+import io
+import re
 import base64
-from typing import Dict, List, Tuple, Optional
-from scipy.signal import find_peaks
+import os
+import copy
+from PIL import Image
+import numpy as np
 
-# --- КОНФИГУРАЦИЯ ---
-SAMPLE_RATE = 22050
-N_FFT = 4096
-HOP_LENGTH = 512
-DURATION_LIMIT = 30.0
-MIN_FREQ = 50
-MAX_FREQ = 8000
+# Опциональные импорты — с защитой от отсутствия
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+    GSPREAD_AVAILABLE = True
+except ImportError:
+    GSPREAD_AVAILABLE = False
 
-# Частотные профили CFNA (исправленные, точные)
-CFNA_SOUND_PROFILES = {
-    "chain_rattle_cold": {
-        "name": "Стук цепи ГРМ (холодная)",
-        "freq_range": (600, 1800),
-        "harmonic_of_rpm": True,
-        "rpm_multiplier": 0.5,  # Полуоборот цепи
-        "confidence_threshold": 0.6,
-        "description": "Металлический ритмичный стук, усиливается при запуске, затихает через 2-3 минуты. Частота = 0.5 × обороты двигателя.",
-        "vcds_groups": ["093", "004"],
-        "typical_fix": "Замена успокоителя цепи (03C109507Q) или натяжителя (03C109507R)",
-        "urgency": "Средняя — 10-15 тыс. км"
-    },
-    "valve_tick": {
-        "name": "Тик гидрокомпенсаторов",
-        "freq_range": (2000, 4500),
-        "harmonic_of_rpm": True,
-        "rpm_multiplier": 0.25,  # 1 тик на 2 оборота (1 оборот распредвала)
-        "confidence_threshold": 0.55,
-        "description": "Высокий металлический тик, регулярный, на холодную или при низком давлении масла. Частота = 0.25 × обороты двигателя.",
-        "vcds_groups": ["007", "022"],
-        "typical_fix": "Масло 5W-40 VW 502.00 (Liqui Moly Synthoil HT 5W-40), проверка давления масла, при неудаче — гидрокомпенсаторы (036109651)",
-        "urgency": "Низкая — если проходит прогревом"
-    },
-    "alternator_bearing": {
-        "name": "Подшипник генератора",
-        "freq_range": (1200, 3500),
-        "harmonic_of_rpm": True,
-        "rpm_multiplier": 2.5,  # Генератор крутится ~2.5x быстрее двигателя
-        "confidence_threshold": 0.5,
-        "description": "Нарастающий гул/вой с оборотами, не зависит от температуры мотора. Частота = 2.5 × обороты двигателя.",
-        "vcds_groups": ["004"],
-        "typical_fix": "Замена подшипников генератора (INA 6203-2RS + 6202-2RS) или генератора целиком",
-        "urgency": "Средняя — может заклинить, оборвать ремень"
-    },
-    "tensioner_roller": {
-        "name": "Обводной/натяжной ролик ремня ГРМ",
-        "freq_range": (800, 3000),
-        "harmonic_of_rpm": True,
-        "rpm_multiplier": 1.0,
-        "confidence_threshold": 0.5,
-        "description": "Свист или гул, усиливается с оборотами, пропадает при снятии ремня. Частота = 1.0 × обороты двигателя.",
-        "vcds_groups": [],
-        "typical_fix": "Замена ролика натяжителя (03C145299C) или обводного (03C145276B)",
-        "urgency": "Высокая — обрыв ремня = загиб клапанов"
-    },
-    "water_pump": {
-        "name": "Помпа системы охлаждения",
-        "freq_range": (600, 2000),
-        "harmonic_of_rpm": True,
-        "rpm_multiplier": 1.2,  # Помпа крутится чуть быстрее двигателя
-        "confidence_threshold": 0.5,
-        "description": "Ровный гул, иногда с металлическим скрежем, может пульсировать. Частота = 1.2 × обороты двигателя.",
-        "vcds_groups": ["007"],
-        "typical_fix": "Замена помпы (03C121004J) с прокладкой (03C121043C)",
-        "urgency": "Средняя — течь ОЖ, перегрев"
-    },
-    "piston_knock": {
-        "name": "Стук поршневых пальцев",
-        "freq_range": (1000, 3000),
-        "harmonic_of_rpm": True,
-        "rpm_multiplier": 0.5,  # 2 удара на оборот
-        "confidence_threshold": 0.45,
-        "description": "Глухой стук под нагрузкой, особенно при резком газе с низких оборотов. Поршни EM (до 2013). Частота = 0.5 × обороты двигателя.",
-        "vcds_groups": ["015", "016"],
-        "typical_fix": "Замена поршней на ET (036107065N) или кованые",
-        "urgency": "Высокая — разрушение поршня"
-    },
-    "con_rattle": {
-        "name": "Стук шатунных вкладышей",
-        "freq_range": (50, 500),
-        "harmonic_of_rpm": True,
-        "rpm_multiplier": 0.5,
-        "confidence_threshold": 0.4,
-        "description": "Низкий тяжёлый стук, металлический, на холодную или при масляном голодании. Частота = 0.5 × обороты двигателя.",
-        "vcds_groups": ["007"],
-        "typical_fix": "Срочная диагностика давления масла, замена вкладышей (036105591A)",
-        "urgency": "Критическая — вращательный удар, заклинивание"
-    },
-    "lpg_injector_click": {
-        "name": "Щелчки газовых форсунок ГБО",
-        "freq_range": (50, 200),
-        "harmonic_of_rpm": True,
-        "rpm_multiplier": 0.33,  # 4 цилиндра = 2 вспышки на оборот = частота 0.33×RPM/60
-        "confidence_threshold": 0.3,
-        "description": "Регулярные щелчки низкой частоты, характерны только при работе на газе. Норма.",
-        "vcds_groups": [],
-        "typical_fix": "Норма работы ГБО. Неисправность если щелчки нерегулярные или сопровождаются пропусками",
-        "urgency": "Низкая — норма"
-    },
-    "exhaust_leak": {
-        "name": "Подсос/трещина выпускного коллектора",
-        "freq_range": (200, 1500),
-        "harmonic_of_rpm": False,
-        "rpm_multiplier": None,
-        "confidence_threshold": 0.4,
-        "description": "Шипение, пульсирующий шум, не зависит от температуры. Усиливается под нагрузкой.",
-        "vcds_groups": ["002", "004"],
-        "typical_fix": "Замена выпускного коллектора (03C253031A) + прокладка (03C253039A)",
-        "urgency": "Средняя"
-    }
-}
+# Импорт наших модулей
+try:
+    from config import (
+        MODEL_NAME, API_KEY, 
+        get_system_prompt, build_reference_map, 
+        TEST_SCENARIOS, VCDS_GROUPS, CFNA_FAULTS
+    )
+    from vcds_engine import (
+        parse_vcds_csv, generate_test_log_df, 
+        generate_log_summary, encode_image_to_base64
+    )
+    CUSTOM_MODULES_OK = True
+except Exception as e:
+    CUSTOM_MODULES_OK = False
+    CUSTOM_MODULES_ERROR = str(e)
+
+try:
+    from audio_engine_diagnosis import analyze_engine_audio, get_image_base64, cleanup_all_temp_files
+    AUDIO_MODULE_OK = True
+except Exception as e:
+    AUDIO_MODULE_OK = False
+    AUDIO_MODULE_ERROR = str(e)
+
+st.set_page_config(page_title="VAG Expert Chat + Vision", page_icon="🚗", layout="wide")
 
 
-# --- ИЗВЛЕЧЕНИЕ АУДИО ---
+# ==================== API КЛЮЧ ====================
+# Пробуем st.secrets, потом os.environ, потом пустую строку
+API_KEY = ""
+try:
+    API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
+except Exception:
+    pass
+if not API_KEY:
+    API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 
-def extract_audio_from_video(video_path: str, output_audio_path: Optional[str] = None) -> str:
-    """Извлекает аудио из видео через ffmpeg."""
-    if output_audio_path is None:
-        fd, output_audio_path = tempfile.mkstemp(suffix="_audio.wav")
-        os.close(fd)
+MODEL_NAME = "google/gemini-2.5-flash"
 
-    cmd = [
-        "ffmpeg", "-y", "-i", video_path,
-        "-vn", "-acodec", "pcm_s16le",
-        "-ar", str(SAMPLE_RATE), "-ac", "1",
-        output_audio_path
-    ]
 
+# ==================== АУТЕНТИФИКАЦИЯ (с защитой) ====================
+
+def check_password():
+    """Проверка пин-кода с защитой от ошибок Streamlit Cloud."""
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode != 0:
-            raise RuntimeError(f"ffmpeg error: {result.stderr}")
-        return output_audio_path
-    except FileNotFoundError:
-        raise RuntimeError("ffmpeg не установлен. Установите: sudo apt-get install ffmpeg")
-
-
-def load_audio(file_path: str, duration: Optional[float] = None) -> Tuple[np.ndarray, int]:
-    """Загружает аудио файл через librosa."""
-    try:
-        y, sr = librosa.load(file_path, sr=SAMPLE_RATE, mono=True, duration=duration or DURATION_LIMIT)
-        return y, sr
-    except Exception as e:
-        raise RuntimeError(f"Ошибка загрузки аудио: {e}")
-
-
-# --- ПРЕДОБРАБОТКА ---
-
-def preprocess_audio(y: np.ndarray, sr: int,
-                     filter_low: float = MIN_FREQ,
-                     filter_high: float = MAX_FREQ) -> np.ndarray:
-    """Фильтрация: high-pass + low-pass + нормализация."""
-    y_hp = librosa.effects.preemphasis(y, coef=0.97)
-
-    D = librosa.stft(y_hp, n_fft=N_FFT, hop_length=HOP_LENGTH)
-    freqs = librosa.fft_frequencies(sr=sr, n_fft=N_FFT)
-
-    mask = (freqs >= filter_low) & (freqs <= filter_high)
-    D_filtered = D * mask[:, np.newaxis]
-
-    y_filtered = librosa.istft(D_filtered, hop_length=HOP_LENGTH, length=len(y_hp))
-
-    if np.max(np.abs(y_filtered)) > 0:
-        y_filtered = y_filtered / np.max(np.abs(y_filtered))
-
-    return y_filtered
-
-
-def detect_stable_segments(y: np.ndarray, sr: int,
-                           frame_length: int = 2048,
-                           min_duration_sec: float = 2.0) -> List[Tuple[int, int]]:
-    """Находит стабильные участки записи."""
-    rms = librosa.feature.rms(y=y, frame_length=frame_length, hop_length=HOP_LENGTH)[0]
-
-    window = int(sr / HOP_LENGTH * 0.5)
-    rms_smooth = np.convolve(rms, np.ones(window)/window, mode='same')
-
-    mean_rms = rms_smooth.mean()
-    mask = (rms_smooth > mean_rms * 0.3) & (rms_smooth < mean_rms * 2.5)
-
-    segments = []
-    in_segment = False
-    start = 0
-
-    for i, val in enumerate(mask):
-        if val and not in_segment:
-            in_segment = True
-            start = i
-        elif not val and in_segment:
-            in_segment = False
-            end = i
-            duration = (end - start) * HOP_LENGTH / sr
-            if duration >= min_duration_sec:
-                segments.append((start * HOP_LENGTH, end * HOP_LENGTH))
-
-    if not segments:
-        mid = len(y) // 2
-        half = int(min_duration_sec * sr / 2)
-        segments.append((max(0, mid - half), min(len(y), mid + half)))
-
-    return segments
-
-
-# --- АНАЛИЗ СПЕКТРА ---
-
-def compute_spectrogram(y: np.ndarray, sr: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Вычисляет спектрограмму в dB."""
-    D = librosa.stft(y, n_fft=N_FFT, hop_length=HOP_LENGTH)
-    S_db = librosa.amplitude_to_db(np.abs(D), ref=np.max)
-    freqs = librosa.fft_frequencies(sr=sr, n_fft=N_FFT)
-    times = librosa.frames_to_time(np.arange(S_db.shape[1]), sr=sr, hop_length=HOP_LENGTH)
-    return S_db, freqs, times
-
-
-def find_dominant_frequencies(S_db: np.ndarray, freqs: np.ndarray,
-                               top_n: int = 10) -> List[Tuple[float, float]]:
-    """Находит доминирующие частоты."""
-    mean_spectrum = S_db.mean(axis=1)
-
-    peaks, properties = find_peaks(mean_spectrum, height=-60, distance=20)
-
-    peak_data = [(freqs[p], mean_spectrum[p]) for p in peaks]
-    peak_data.sort(key=lambda x: x[1], reverse=True)
-
-    return peak_data[:top_n]
-
-
-def analyze_harmonics(dominant_freqs: List[Tuple[float, float]],
-                      rpm: Optional[float] = None) -> Dict:
-    """Анализирует гармоники относительно оборотов мотора."""
-    if rpm is None:
-        return {"engine_freq": None, "harmonics": []}
-
-    engine_freq = rpm / 60.0
-    harmonics = []
-
-    for freq, mag in dominant_freqs:
-        if engine_freq > 0:
-            ratio = freq / engine_freq
-            nearest_harmonic = round(ratio)
-            deviation = abs(ratio - nearest_harmonic)
-
-            if deviation < 0.15:
-                harmonics.append({
-                    "freq": freq,
-                    "harmonic_n": nearest_harmonic,
-                    "ratio": ratio,
-                    "magnitude_db": mag,
-                    "matches_engine": True
-                })
-
-    return {"engine_freq": engine_freq, "harmonics": harmonics}
-
-
-def score_sound_profiles(S_db: np.ndarray, freqs: np.ndarray,
-                         harmonic_analysis: Dict,
-                         engine_temp: str = "warm") -> List[Dict]:
-    """Сопоставляет спектр с профилями звуков CFNA."""
-    scores = []
-    mean_spectrum = S_db.mean(axis=1)
-
-    for key, profile in CFNA_SOUND_PROFILES.items():
-        if "cold" in key and engine_temp in ("warm", "hot"):
-            continue
-
-        f_low, f_high = profile["freq_range"]
-        idx_low = np.argmin(np.abs(freqs - f_low))
-        idx_high = np.argmin(np.abs(freqs - f_high))
-
-        band_energy = np.mean(mean_spectrum[idx_low:idx_high])
-        band_peak = np.max(mean_spectrum[idx_low:idx_high])
-
-        score = (band_peak + 60) / 60
-        score = np.clip(score, 0, 1)
-
-        if profile["harmonic_of_rpm"] and harmonic_analysis.get("engine_freq"):
-            expected_freq = harmonic_analysis["engine_freq"] * profile["rpm_multiplier"]
-            closest = min(harmonic_analysis["harmonics"],
-                         key=lambda h: abs(h["freq"] - expected_freq),
-                         default=None)
-            if closest and abs(closest["freq"] - expected_freq) / expected_freq < 0.2:
-                score *= 1.3
-
-        if score >= profile["confidence_threshold"]:
-            scores.append({
-                "key": key,
-                "name": profile["name"],
-                "confidence": min(score, 1.0),
-                "freq_range": f"{f_low}-{f_high} Гц",
-                "description": profile["description"],
-                "vcds_groups": profile["vcds_groups"],
-                "typical_fix": profile["typical_fix"],
-                "urgency": profile["urgency"]
-            })
-
-    scores.sort(key=lambda x: x["confidence"], reverse=True)
-    return scores
-
-
-# --- ВИЗУАЛИЗАЦИЯ (с автоочисткой) ---
-
-def _save_temp_plot(fig) -> str:
-    """Сохраняет фигуру во временный файл и закрывает её."""
-    fd, tmp_path = tempfile.mkstemp(suffix=".png")
-    os.close(fd)
-    fig.savefig(tmp_path, dpi=150, bbox_inches='tight')
-    plt.close(fig)
-    return tmp_path
-
-
-def create_spectrogram_image(S_db: np.ndarray, freqs: np.ndarray, times: np.ndarray,
-                           title: str = "Спектрограмма звука мотора CFNA") -> str:
-    """Создаёт PNG спектрограммы. Возвращает путь к файлу."""
-    fig, ax = plt.subplots(figsize=(12, 6))
-
-    img = librosa.display.specshow(S_db, sr=SAMPLE_RATE, hop_length=HOP_LENGTH,
-                                    x_axis='time', y_axis='hz', ax=ax,
-                                    cmap='magma')
-
-    ax.set_title(title, fontsize=14, fontweight='bold')
-    ax.set_xlabel("Время (сек)", fontsize=12)
-    ax.set_ylabel("Частота (Гц)", fontsize=12)
-    ax.set_ylim(MIN_FREQ, MAX_FREQ)
-
-    plt.colorbar(img, ax=ax, format='%+2.0f dB', label='Амплитуда (dB)')
-    plt.tight_layout()
-
-    return _save_temp_plot(fig)
-
-
-def create_spectrum_plot(dominant_freqs: List[Tuple[float, float]],
-                         harmonic_analysis: Dict) -> str:
-    """Создаёт график доминирующих частот."""
-    fig, ax = plt.subplots(figsize=(10, 5))
-
-    freqs = [f for f, _ in dominant_freqs]
-    mags = [m for _, m in dominant_freqs]
-
-    bars = ax.bar(range(len(freqs)), mags, color='steelblue', alpha=0.7)
-    ax.set_xticks(range(len(freqs)))
-    ax.set_xticklabels([f"{f:.0f}" for f in freqs], rotation=45)
-    ax.set_xlabel("Частота (Гц)", fontsize=12)
-    ax.set_ylabel("Амплитуда (dB)", fontsize=12)
-    ax.set_title("Доминирующие частоты", fontsize=14, fontweight='bold')
-    ax.axhline(y=-40, color='red', linestyle='--', alpha=0.5, label='Порог значимости')
-
-    if harmonic_analysis.get("engine_freq"):
-        ef = harmonic_analysis["engine_freq"]
-        for n in range(1, 8):
-            freq_pos = n * ef
-            if freq_pos <= max(freqs) * 1.1:
-                ax.axvline(x=np.argmin(np.abs(np.array(freqs) - freq_pos)), 
-                          color='green', linestyle=':', alpha=0.3)
-
-    ax.legend()
-    plt.tight_layout()
-
-    return _save_temp_plot(fig)
-
-
-# --- ПОЛНЫЙ КОНВЕЙЕР ---
-
-def analyze_engine_audio(uploaded_file,
-                         rpm: Optional[float] = None,
-                         engine_temp: str = "warm",
-                         has_lpg: bool = False) -> Dict:
-    """Полный конвейер анализа аудио/видео файла."""
-    result = {
-        "success": False,
-        "error": None,
-        "spectrogram_path": None,
-        "spectrum_plot_path": None,
-        "dominant_frequencies": [],
-        "harmonic_analysis": {},
-        "sound_scores": [],
-        "prompt_for_gemini": "",
-        "raw_features": {}
-    }
-
-    tmp_files = []  # Отслеживаем для очистки
-
-    try:
-        # 1. Определяем тип файла
-        if hasattr(uploaded_file, 'name'):
-            file_name = uploaded_file.name
-            file_bytes = uploaded_file.getvalue()
-        else:
-            file_name = os.path.basename(uploaded_file)
-            with open(uploaded_file, 'rb') as f:
-                file_bytes = f.read()
-
-        # 2. Сохраняем во временный файл
-        suffix = os.path.splitext(file_name)[1].lower()
-        fd, tmp_path = tempfile.mkstemp(suffix=suffix)
-        os.close(fd)
-        with open(tmp_path, 'wb') as f:
-            f.write(file_bytes)
-        tmp_files.append(tmp_path)
-
-        # 3. Извлекаем аудио если видео
-        audio_path = tmp_path
-        if suffix in ['.mp4', '.avi', '.mov', '.mkv', '.webm']:
-            audio_path = extract_audio_from_video(tmp_path)
-            tmp_files.append(audio_path)
-
-        # 4. Загружаем аудио
-        y, sr = load_audio(audio_path, duration=DURATION_LIMIT)
-
-        # 5. Предобработка
-        y_filtered = preprocess_audio(y, sr)
-
-        # 6. Стабильные сегменты
-        segments = detect_stable_segments(y_filtered, sr)
-
-        if not segments:
-            result["error"] = "Не удалось найти стабильные участки записи"
-            return result
-
-        best_segment = max(segments, key=lambda s: s[1] - s[0])
-        y_stable = y_filtered[best_segment[0]:best_segment[1]]
-
-        # 7. Спектрограмма
-        S_db, freqs, times = compute_spectrogram(y_stable, sr)
-        result["spectrogram_path"] = create_spectrogram_image(S_db, freqs, times)
-
-        # 8. Доминирующие частоты
-        dominant = find_dominant_frequencies(S_db, freqs, top_n=15)
-        result["dominant_frequencies"] = [(f"{f:.0f}", f"{m:.1f}") for f, m in dominant]
-
-        # 9. Гармонический анализ
-        harmonic = analyze_harmonics(dominant, rpm)
-        result["harmonic_analysis"] = harmonic
-
-        # 10. Спектр-плот
-        result["spectrum_plot_path"] = create_spectrum_plot(dominant, harmonic)
-
-        # 11. Скоринг профилей
-        scores = score_sound_profiles(S_db, freqs, harmonic, engine_temp)
-        result["sound_scores"] = scores
-
-        # 12. Промпт для Gemini
-        result["prompt_for_gemini"] = _build_gemini_prompt(
-            dominant, harmonic, scores, rpm, engine_temp, has_lpg
-        )
-
-        # 13. Сырые признаки
-        result["raw_features"] = {
-            "rms_mean": float(np.sqrt(np.mean(y_stable**2))),
-            "rms_std": float(np.std(y_stable)),
-            "zero_crossing_rate": float(librosa.feature.zero_crossing_rate(y_stable).mean()),
-            "spectral_centroid": float(librosa.feature.spectral_centroid(y=y_stable, sr=sr).mean()),
-            "spectral_rolloff": float(librosa.feature.spectral_rolloff(y=y_stable, sr=sr).mean()),
-            "duration_analyzed": len(y_stable) / sr
-        }
-
-        result["success"] = True
-
-    except Exception as e:
-        result["error"] = str(e)
-    finally:
-        # Чистим временные файлы
-        for p in tmp_files:
-            if p and os.path.exists(p):
+        query_params = st.query_params
+        if "auth" in query_params:
+            st.session_state.authenticated = True
+            try:
+                st.query_params.clear()
+            except Exception:
+                pass
+            return True
+    except Exception:
+        pass
+
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+    if st.session_state.authenticated:
+        return True
+
+    st.title("🔒 Доступ ограничен")
+    st.write("Введите пин-код для продолжения")
+    with st.form("auth_form"):
+        password = st.text_input("Пин-код", type="password")
+        submit = st.form_submit_button("Войти")
+        if submit:
+            correct_password = "1234"
+            try:
+                correct_password = st.secrets.get("APP_PASSWORD", "1234")
+            except Exception:
+                correct_password = os.environ.get("APP_PASSWORD", "1234")
+            if password == correct_password:
+                st.session_state.authenticated = True
                 try:
-                    os.unlink(p)
-                except:
+                    st.query_params["auth"] = "1"
+                except Exception:
                     pass
+                st.rerun()
+            else:
+                st.error("Неверный пин-код")
+    return False
 
-    return result
+if not check_password():
+    st.stop()
 
 
-def _build_gemini_prompt(dominant_freqs: List[Tuple[float, float]],
-                         harmonic_analysis: Dict,
-                         scores: List[Dict],
-                         rpm: Optional[float],
-                         engine_temp: str,
-                         has_lpg: bool) -> str:
-    """Строит текстовый промпт для Gemini."""
-    lines = [
-        "Ты — эксперт по акустической диагностике двигателей VAG.",
-        "Анализируй спектрограмму и данные частотного анализа.",
-        "",
-        "=== КОНТЕКСТ ЗАПИСИ ===",
-        f"Двигатель: CFNA 1.6 MPI (105 л.с., 1598 см³, 10.5:1), Magneti Marelli 7GV",
-        f"Температура: {engine_temp}",
-    ]
+# ==================== GOOGLE SHEETS (с fallback) ====================
 
-    if rpm:
-        lines.append(f"Обороты: {rpm:.0f} об/мин (частота вращения {rpm/60:.1f} Гц)")
+def _get_gsheet():
+    if not GSPREAD_AVAILABLE:
+        return None
+    try:
+        b64_str = st.secrets.get("GSPREAD_SERVICE_ACCOUNT_BASE64", "")
+        if not b64_str:
+            return None
+        creds_json = base64.b64decode(b64_str).decode()
+        creds_dict = json.loads(creds_json)
+        scopes = ['https://www.googleapis.com/auth/spreadsheets']
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        client = gspread.authorize(creds)
+        sheet = client.open_by_url(
+            "https://docs.google.com/spreadsheets/d/1ALFMvWYfjJsT_OeLWQRDXIzuvoA-8Xvn9CB5tm8qH1w/edit#gid=0"
+        )
+        return sheet.sheet1
+    except Exception:
+        return None
+
+def save_profile(vin_code, is_base_trim, mods):
+    sheet = _get_gsheet()
+    if sheet is None:
+        return
+    try:
+        profile = {"vin_code": vin_code, "is_base_trim": is_base_trim, "mods": mods}
+        sheet.update("A1", [[json.dumps(profile, ensure_ascii=False)]])
+    except Exception:
+        pass
+
+def load_profile():
+    sheet = _get_gsheet()
+    if sheet is None:
+        return {"vin_code": "", "is_base_trim": True, "mods": {"tuned": False, "decatted": False, "lpg": False}}
+    try:
+        data_str = sheet.acell("A1").value
+        if data_str:
+            return json.loads(data_str)
+    except Exception:
+        pass
+    return {"vin_code": "", "is_base_trim": True, "mods": {"tuned": False, "decatted": False, "lpg": False}}
+
+def save_chat_history(history):
+    sheet = _get_gsheet()
+    if sheet is None:
+        return
+    try:
+        trimmed = history[-50:] if len(history) > 50 else history
+        sheet.update("B1", [[json.dumps(trimmed, ensure_ascii=False)]])
+    except Exception:
+        pass
+
+def load_chat_history():
+    sheet = _get_gsheet()
+    if sheet is None:
+        return []
+    try:
+        data_str = sheet.acell("B1").value
+        if data_str:
+            return json.loads(data_str)
+    except Exception:
+        return []
+    return []
+
+def clear_chat_history():
+    sheet = _get_gsheet()
+    if sheet is None:
+        return
+    try:
+        sheet.update("B1", [["[]"]])
+    except Exception:
+        pass
+
+
+# ==================== API ИИ ====================
+
+def ask_ai_chat(api_key, model_name, messages, max_tokens=2500):
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://share.streamlit.io",
+    }
+
+    cleaned_messages = []
+    for i, m in enumerate(messages):
+        new_content = []
+        for item in m["content"]:
+            if item["type"] == "text":
+                new_content.append(item)
+            elif item["type"] == "image_url":
+                if i == len(messages) - 1:
+                    new_content.append(item)
+                else:
+                    new_content.append({"type": "text", "text": "[Ранее отправленный скриншот/спектрограмма]"})
+        cleaned_messages.append({"role": m["role"], "content": new_content})
+
+    data = {
+        "model": model_name,
+        "messages": cleaned_messages,
+        "max_tokens": max_tokens
+    }
+
+    try:
+        response = requests.post(url, headers=headers, data=json.dumps(data), timeout=60)
+        if response.status_code == 200:
+            return response.json()['choices'][0]['message']['content']
+        else:
+            return f"Ошибка API OpenRouter: {response.status_code} - {response.text}"
+    except Exception as e:
+        return f"Ошибка сети: {e}"
+
+
+# ==================== ИНИЦИАЛИЗАЦИЯ СОСТОЯНИЙ ====================
+
+profile = load_profile()
+saved_history = load_chat_history()
+saved_vin = profile.get("vin_code", "")
+
+if "is_base_trim" not in st.session_state:
+    st.session_state.is_base_trim = profile.get("is_base_trim", True)
+if "mods" not in st.session_state:
+    st.session_state.mods = profile.get("mods", {"tuned": False, "decatted": False, "lpg": False})
+if "diagnostic_mode" not in st.session_state:
+    st.session_state.diagnostic_mode = "Механика (Группы 001-063)"
+
+if "chat_history" not in st.session_state:
+    if saved_history:
+        if saved_history and saved_history[0].get("role") == "system":
+            st.session_state.chat_history = saved_history
+        else:
+            st.session_state.chat_history = [
+                {"role": "system", "content": [{"type": "text", "text": get_system_prompt(
+                    st.session_state.diagnostic_mode, st.session_state.is_base_trim,
+                    mods=st.session_state.mods
+                )}]}
+            ] + saved_history
     else:
-        lines.append("Обороты: неизвестны (не предоставлен лог VCDS)")
+        st.session_state.chat_history = [
+            {"role": "system", "content": [{"type": "text", "text": get_system_prompt(
+                st.session_state.diagnostic_mode, st.session_state.is_base_trim,
+                mods=st.session_state.mods
+            )}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "Привет! Я твой виртуальный диагност VAG VCDS. 🚗\n\nЗагрузи CSV-лог (снятый на бензине), скриншот VCDS, или опиши симптомы."}]}
+        ]
 
-    if has_lpg:
-        lines.append("ГБО: установлено (возможны щелчки форсунок 50-200 Гц — игнорировать как норму)")
-
-    lines.extend([
-        "",
-        "=== ДОМИНИРУЮЩИЕ ЧАСТОТЫ ===",
-    ])
-
-    for i, (freq, mag) in enumerate(dominant_freqs[:10], 1):
-        lines.append(f"{i}. {freq:.0f} Гц @ {mag:.1f} dB")
-
-    if harmonic_analysis.get("harmonics"):
-        lines.extend(["", "=== ГАРМОНИКИ ОБОРОТОВ ==="])
-        for h in harmonic_analysis["harmonics"][:5]:
-            lines.append(f"- {h['freq']:.0f} Гц = {h['harmonic_n']}-я гармоника (отклонение {h['ratio']:.2f}x)")
-
-    if scores:
-        lines.extend(["", "=== ВЕРОЯТНОСТНЫЙ АНАЛИЗ (локальный) ==="])
-        for s in scores[:5]:
-            lines.append(f"- {s['name']}: {s['confidence']*100:.0f}% | {s['freq_range']} | {s['urgency']}")
-
-    lines.extend([
-        "",
-        "=== ИНСТРУКЦИЯ ===",
-        "1. Проанализируй спектрограмму (изображение выше).",
-        "2. Учитывай, что в записи могут быть помехи:",
-        "   - Помпа: ровный гул 600-2000 Гц, гармоника оборотов x1.2",
-        "   - Генератор: нарастающий гул, гармоника x2.5",
-        "   - Ролики ремня ГРМ: свист 800-3000 Гц",
-        "   - ГБО форсунки: щелчки 50-200 Гц (если has_lpg=True) — НОРМА",
-        "3. Ищи ИМПУЛЬСНЫЕ пики на гармониках оборотов — это моторный стук.",
-        "4. Постоянный гармонический гул — скорее навесное оборудование.",
-        "5. Дай вероятностный вердикт (0-100%) для каждой возможной неисправности.",
-        "6. Укажи номера групп VCDS для проверки.",
-        "7. Оцени срочность ремонта.",
-    ])
-
-    return "\n".join(lines)
+if "vin_code" not in st.session_state:
+    st.session_state.vin_code = saved_vin
+if "reference_map" not in st.session_state:
+    st.session_state.reference_map = build_reference_map(
+        st.session_state.is_base_trim, st.session_state.mods
+    )
+if "generated_log_df" not in st.session_state:
+    st.session_state.generated_log_df = None
+if "uploaded_image_key" not in st.session_state:
+    st.session_state.uploaded_image_key = 0
 
 
-# --- УТИЛИТЫ ---
+# ==================== БОКОВАЯ ПАНЕЛЬ ====================
 
-def cleanup_all_temp_files():
-    """Очищает ВСЕ временные PNG файлы спектрограмм."""
-    import glob
-    for f in glob.glob(os.path.join(tempfile.gettempdir(), "*.png")):
+with st.sidebar:
+    st.header("⚙️ Конфигурация автомобиля")
+    st.write("Настрой параметры для точной работы ИИ.")
+    st.markdown("---")
+
+    st.subheader("📦 Комплектация")
+    prev_base = st.session_state.is_base_trim
+    st.session_state.is_base_trim = st.checkbox(
+        "Базовая комплектация (CFNA BASE)",
+        value=st.session_state.is_base_trim,
+        help="МКПП, без кондиционера, без ABS. ИИ сузит допуски MAP и проигнорирует отсутствие блоков по CAN."
+    )
+
+    st.markdown("---")
+    st.subheader("🛠️ Модификации")
+
+    decatted = st.checkbox(
+        "Катализатор удален (Евро-2)",
+        value=st.session_state.mods.get("decatted", False),
+        help="ИИ проигнорирует вторую лямбду (Группа 041) и не будет советовать замену ката."
+    )
+    lpg = st.checkbox(
+        "Установлено ГБО (Газ)",
+        value=st.session_state.mods.get("lpg", False),
+        help="ИИ даст советы по ГБО в чате и аудио. Логи всё равно анализируются как бензин."
+    )
+    tuned = st.checkbox(
+        "Чип-тюнинг (Stage 1/Custom)",
+        value=st.session_state.mods.get("tuned", False),
+        help="ИИ сделает скидку на ранние УОЗ и повышенное время впрыска."
+    )
+
+    prev_mods = dict(st.session_state.mods)
+    st.session_state.mods = {"tuned": tuned, "decatted": decatted, "lpg": lpg}
+
+    settings_changed = (prev_base != st.session_state.is_base_trim or 
+                        prev_mods != st.session_state.mods)
+
+    if settings_changed and len(st.session_state.chat_history) > 0:
+        st.session_state.reference_map = build_reference_map(
+            st.session_state.is_base_trim, st.session_state.mods
+        )
+        new_system = get_system_prompt(
+            st.session_state.diagnostic_mode,
+            st.session_state.is_base_trim,
+            mods=st.session_state.mods
+        )
+        st.session_state.chat_history[0] = {
+            "role": "system",
+            "content": [{"type": "text", "text": new_system}]
+        }
+        save_chat_history(st.session_state.chat_history)
+        st.toast("⚙️ Настройки обновлены")
+
+    save_profile(st.session_state.vin_code, st.session_state.is_base_trim, st.session_state.mods)
+
+    st.markdown("---")
+    st.subheader("🔍 Режим диагностики")
+    prev_mode = st.session_state.diagnostic_mode
+    st.session_state.diagnostic_mode = st.radio(
+        "Выберите контур:",
+        ["Механика (Группы 001-063)", "Электрика и CAN (Группы 125-135)"],
+        index=0 if st.session_state.diagnostic_mode.startswith("Механика") else 1
+    )
+
+    if prev_mode != st.session_state.diagnostic_mode and len(st.session_state.chat_history) > 0:
+        new_system = get_system_prompt(
+            st.session_state.diagnostic_mode,
+            st.session_state.is_base_trim,
+            mods=st.session_state.mods
+        )
+        st.session_state.chat_history[0] = {
+            "role": "system",
+            "content": [{"type": "text", "text": new_system}]
+        }
+        save_chat_history(st.session_state.chat_history)
+        st.toast("🔍 Режим изменён")
+
+    if st.session_state.get("vin_code"):
+        st.markdown("---")
+        st.info(f"🆔 **VIN:**\n`{st.session_state.vin_code}`")
+
+    st.markdown("---")
+    st.subheader("🧪 Симулятор")
+
+    current_scenarios = TEST_SCENARIOS.get(st.session_state.diagnostic_mode, {})
+    test_scenario = st.selectbox("Сценарий:", list(current_scenarios.keys()))
+    scenario_key = current_scenarios[test_scenario]
+
+    if st.button("⚡ Сгенерировать лог"):
+        st.session_state.generated_log_df = generate_test_log_df(
+            scenario_key,
+            st.session_state.diagnostic_mode,
+            st.session_state.is_base_trim,
+            mods=st.session_state.mods
+        )
+        st.rerun()
+
+    st.markdown("---")
+    if st.button("🗑️ Очистить историю"):
+        st.session_state.chat_history = [
+            {"role": "system", "content": [{"type": "text", "text": get_system_prompt(
+                st.session_state.diagnostic_mode, st.session_state.is_base_trim,
+                mods=st.session_state.mods
+            )}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "Привет! Я твой виртуальный диагност VAG. 🚗"}]}
+        ]
+        st.session_state.vin_code = ""
+        st.session_state.generated_log_df = None
+        st.session_state.uploaded_image_key += 1
+        clear_chat_history()
+        if AUDIO_MODULE_OK:
+            cleanup_all_temp_files()
+        st.rerun()
+
+    if st.button("🚪 Выйти"):
         try:
-            os.unlink(f)
-        except:
+            if "auth" in st.query_params:
+                st.query_params.clear()
+        except Exception:
             pass
+        if "chat_history" in st.session_state:
+            del st.session_state.chat_history
+        st.session_state.authenticated = False
+        st.rerun()
 
 
-def get_image_base64(path: str) -> str:
-    """Кодирует изображение в base64 data URL."""
-    with open(path, "rb") as f:
-        data = base64.b64encode(f.read()).decode()
-    return f"data:image/png;base64,{data}"
+# ==================== ОСНОВНОЙ ЭКРАН ====================
+
+st.title("VAG Expert Chat + Vision 💬")
+
+for msg in st.session_state.chat_history:
+    if msg["role"] != "system":
+        with st.chat_message(msg["role"]):
+            for content_item in msg["content"]:
+                if content_item["type"] == "text":
+                    st.write(content_item["text"])
+                elif content_item["type"] == "image_url":
+                    st.image(content_item["image_url"]["url"], width=300)
+
+st.markdown("---")
 
 
-if __name__ == "__main__":
-    print("Модуль audio_engine_diagnosis.py загружен успешно")
-    print(f"Доступные профили звуков: {list(CFNA_SOUND_PROFILES.keys())}")
+# ==================== ЗАГРУЗКА ДАННЫХ ====================
+
+st.subheader("📁 Загрузка данных")
+
+st.info("📌 **Важно:** Логи VCDS снимайте на **БЕНЗИНЕ** для точной диагностики. ГБО-анализ — только в текстовом чате.")
+
+uploaded_file = st.file_uploader(
+    "Лог VCDS (.csv/.txt) или скриншот (.png/.jpg)",
+    type=["csv", "txt", "png", "jpg", "jpeg"],
+    key=f"file_uploader_{st.session_state.uploaded_image_key}"
+)
+
+log_df = None
+image_base64 = None
+
+if uploaded_file is not None:
+    if "text" in uploaded_file.type or "csv" in uploaded_file.type:
+        file_bytes = uploaded_file.read()
+        log_df, extracted_vin = parse_vcds_csv(file_bytes)
+        if extracted_vin and extracted_vin != st.session_state.vin_code:
+            st.session_state.vin_code = extracted_vin
+            st.sidebar.info(f"📍 Найден VIN: {extracted_vin}")
+            save_profile(st.session_state.vin_code, st.session_state.is_base_trim, st.session_state.mods)
+    elif "image" in uploaded_file.type:
+        image_base64 = encode_image_to_base64(uploaded_file)
+        st.image(uploaded_file, caption="Превью скриншота VCDS", width=400)
+
+if uploaded_file is None and st.session_state.generated_log_df is not None:
+    log_df = st.session_state.generated_log_df
+
+
+# ==================== ГРАФИКИ ====================
+
+if log_df is not None and not log_df.empty:
+    st.success("📊 Данные лога распознаны (режим: бензин)")
+    time_col = log_df.columns[0]
+
+    with st.expander("📊 График параметров", expanded=True):
+        if st.session_state.diagnostic_mode.startswith("Электрика"):
+            selected_cols = [c for c in log_df.columns if any(x in c for x in ["АКПП", "АБС", "Приборка", "SRS"])]
+            if selected_cols:
+                fig = px.line(log_df, x=time_col, y=selected_cols,
+                              title="Статус CAN-связи (1=ОК, 0=обрыв, -1=блок отсутствует)",
+                              template="plotly_dark")
+                fig.update_yaxes(range=[-1.2, 1.2], tickvals=[-1, 0, 1])
+                st.plotly_chart(fig, use_container_width=True)
+        else:
+            selected_cols = [c for c in log_df.columns if any(x in c for x in [
+                "Давление", "коррекция", "Пропуски", "Откат", "G187", "G79",
+                "Угол дросселя", "Напряжение ДД", "Температура ОЖ", "Температура впуска",
+                "Фазовое положение", "Сопротивление Зонда", "Конверсия катализатора",
+                "Напряжение Зонда", "Датчик дросселя", "Педаль газа"
+            ])]
+
+            if selected_cols:
+                fig = go.Figure()
+                for col in selected_cols:
+                    fig.add_trace(go.Scatter(x=log_df[time_col], y=log_df[col], mode='lines', name=col))
+
+                    for ref_key, values in st.session_state.reference_map.items():
+                        if len(values) == 4 and ref_key.lower() in col.lower():
+                            low, high, c_low, c_high = values
+                            fig.add_hline(y=low, line_dash="dot", line_color=c_low,
+                                          annotation_text=f"Мин {ref_key}")
+                            fig.add_hline(y=high, line_dash="dot", line_color=c_high,
+                                          annotation_text=f"Макс {ref_key}")
+
+                fig.update_layout(
+                    template="plotly_dark", 
+                    title="Параметры с заводскими допусками VAG (бензин)",
+                    xaxis_title="Время (сек)", 
+                    yaxis_title="Значение"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+            st.dataframe(log_df.head(10))
+
+    if st.button("🧠 Запустить экспертный анализ лога"):
+        if not API_KEY:
+            st.error("API-ключ не найден! Добавь OPENROUTER_API_KEY в Secrets (Settings → Secrets).")
+        else:
+            log_summary_text = generate_log_summary(log_df, st.session_state.vin_code, st.session_state.is_base_trim)
+
+            system_instruction = get_system_prompt(
+                mode=st.session_state.diagnostic_mode,
+                is_base_trim=st.session_state.is_base_trim,
+                mods=st.session_state.mods
+            )
+
+            user_msg = {
+                "role": "user", 
+                "content": [{"type": "text", "text": f"Привет! Я загрузил CSV-лог диагностики (снятый на БЕНЗИНЕ). Вот статистический срез данных:\n\n{log_summary_text}\n\nПроанализируй эти параметры, найди скрытые аномалии, поставь диагноз и распиши пошаговый план ремонта."}]
+            }
+
+            st.session_state.chat_history.append(user_msg)
+
+            messages = [
+                {"role": "system", "content": [{"type": "text", "text": system_instruction}]},
+                *st.session_state.chat_history[1:],
+            ]
+
+            with st.spinner("VAG Expert анализирует лог (бензин)..."):
+                ai_response = ask_ai_chat(API_KEY, MODEL_NAME, messages, max_tokens=3000)
+
+            st.session_state.chat_history.append({"role": "assistant", "content": [{"type": "text", "text": ai_response}]})
+            save_chat_history(st.session_state.chat_history)
+            st.rerun()
+
+
+# ==================== СКРИНШОТ VCDS ====================
+
+if image_base64 is not None:
+    st.success("🖼️ Скриншот готов")
+    if st.button("👁️ Отправить скриншот в Gemini"):
+        if not API_KEY:
+            st.error("API-ключ не найден! Добавь OPENROUTER_API_KEY в Secrets.")
+        else:
+            prompt_text = "Пользователь загрузил скриншот окна VCDS. Распознай коды ошибок или группы измерений и выдай структурированный диагностический вердикт."
+            if st.session_state.vin_code:
+                prompt_text = f"VIN: {st.session_state.vin_code}. " + prompt_text
+
+            msg = {
+                "role": "user", 
+                "content": [
+                    {"type": "text", "text": prompt_text},
+                    {"type": "image_url", "image_url": {"url": image_base64}}
+                ]
+            }
+            st.session_state.chat_history.append(msg)
+
+            temp_hist = copy.deepcopy(st.session_state.chat_history)
+
+            with st.chat_message("assistant"):
+                with st.spinner("Gemini анализирует скриншот..."):
+                    resp = ask_ai_chat(API_KEY, MODEL_NAME, temp_hist, max_tokens=2000)
+                    st.write(resp)
+
+            st.session_state.chat_history.append({"role": "assistant", "content": [{"type": "text", "text": resp}]})
+            save_chat_history(st.session_state.chat_history)
+            st.session_state.uploaded_image_key += 1
+            st.rerun()
+
+
+# ==================== АУДИО/ВИДЕО ДИАГНОСТИКА ====================
+
+st.markdown("---")
+st.subheader("🎙️ Аудио/Видео диагностика мотора")
+
+if not AUDIO_MODULE_OK:
+    st.warning(f"⚠️ Аудио-модуль не загружен: {AUDIO_MODULE_ERROR}")
+    st.info("Установите: pip install librosa soundfile scipy matplotlib")
+else:
+    st.caption("📹 Запиши 5–10 секунд работы мотора. Для точности загрузи также CSV-лог VCDS (на бензине) — RPM подтянутся автоматически.")
+
+    audio_file = st.file_uploader(
+        "Загрузи видео или аудио записи работы мотора",
+        type=["mp4", "avi", "mov", "mkv", "wav", "mp3", "m4a", "ogg"],
+        key="audio_diagnosis_uploader"
+    )
+
+    if audio_file is not None:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.audio(audio_file)
+        with col2:
+            audio_temp = st.radio(
+                "Температура мотора:",
+                ["Холодный", "Прогретый", "Горячий"],
+                index=1,
+                key="engine_temp_audio"
+            )
+            temp_map = {"Холодный": "cold", "Прогретый": "warm", "Горячий": "hot"}
+
+            rpm_default = 840.0
+            if log_df is not None and not log_df.empty:
+                rpm_col = [c for c in log_df.columns if "Обороты" in c or "RPM" in c.upper()]
+                if rpm_col:
+                    rpm_default = float(log_df[rpm_col[0]].mean())
+
+            rpm_input = st.number_input(
+                "Обороты двигателя (об/мин):",
+                value=rpm_default,
+                min_value=0.0, max_value=8000.0, step=10.0,
+                key="audio_rpm_input",
+                help="Автоподстановка из CSV-лога. Для CFNA на ХХ ≈ 840 об/мин."
+            )
+
+        if st.button("🔊 Запустить акустический анализ", key="run_audio_analysis"):
+            with st.spinner("Анализирую звук... 10-20 секунд"):
+                try:
+                    result = analyze_engine_audio(
+                        audio_file,
+                        rpm=rpm_input,
+                        engine_temp=temp_map[audio_temp],
+                        has_lpg=st.session_state.mods.get("lpg", False)
+                    )
+
+                    if not result["success"]:
+                        st.error(f"❌ Ошибка: {result['error']}")
+                    else:
+                        st.success("✅ Акустический анализ завершён")
+
+                        if result.get("spectrogram_path") and os.path.exists(result["spectrogram_path"]):
+                            st.image(result["spectrogram_path"], caption="Спектрограмма", use_container_width=True)
+
+                        if result.get("spectrum_plot_path") and os.path.exists(result["spectrum_plot_path"]):
+                            st.image(result["spectrum_plot_path"], caption="Доминирующие частоты", use_container_width=True)
+
+                        st.subheader("📊 Локальный анализ")
+
+                        with st.expander("Сырые акустические признаки"):
+                            if result.get("raw_features"):
+                                for k, v in result["raw_features"].items():
+                                    if isinstance(v, float):
+                                        st.write(f"**{k}:** {v:.4f}")
+                                    else:
+                                        st.write(f"**{k}:** {v}")
+
+                        if result.get("sound_scores"):
+                            st.write("**Обнаруженные паттерны:**")
+                            for s in result["sound_scores"][:5]:
+                                urgency_emoji = {
+                                    "Низкая": "🟢", "Средняя": "🟡",
+                                    "Высокая": "🔴", "Критическая": "🆘"
+                                }
+                                urgency_key = s["urgency"].split(" — ")[0] if " — " in s["urgency"] else s["urgency"]
+                                emoji = urgency_emoji.get(urgency_key, "⚪")
+
+                                with st.container():
+                                    st.write(f"{emoji} **{s['name']}** — уверенность {s['confidence']*100:.0f}%")
+                                    st.caption(f"Диапазон: {s['freq_range']} | Срочность: {s['urgency']}")
+                                    if s.get("vcds_groups"):
+                                        st.caption(f"Проверить VCDS группы: {', '.join(s['vcds_groups'])}")
+                                    st.caption(f"Рекомендация: {s['typical_fix']}")
+                        else:
+                            st.info("Локальный анализ не выявил паттернов. Звук в пределах нормы.")
+
+                        st.subheader("🤖 Экспертный анализ Gemini")
+
+                        if st.button("👁️ Отправить спектрограмму в Gemini", key="send_to_gemini_audio"):
+                            if not API_KEY:
+                                st.error("API-ключ не найден!")
+                            else:
+                                img_b64 = get_image_base64(result["spectrogram_path"])
+
+                                messages = [
+                                    {"role": "system", "content": [{"type": "text", "text": "Ты — эксперт по акустической диагностике двигателей VAG. Анализируй спектрограммы и частотные данные."}]},
+                                    {"role": "user", "content": [
+                                        {"type": "text", "text": result["prompt_for_gemini"]},
+                                        {"type": "image_url", "image_url": {"url": img_b64}}
+                                    ]}
+                                ]
+
+                                with st.spinner("Gemini анализирует спектрограмму..."):
+                                    gemini_response = ask_ai_chat(API_KEY, MODEL_NAME, messages, max_tokens=2500)
+
+                                st.markdown(gemini_response)
+
+                                st.session_state.chat_history.append({
+                                    "role": "user",
+                                    "content": [{"type": "text", "text": f"[Аудио-диагностика] {audio_file.name}"}]
+                                })
+                                st.session_state.chat_history.append({
+                                    "role": "assistant",
+                                    "content": [{"type": "text", "text": gemini_response}]
+                                })
+                                save_chat_history(st.session_state.chat_history)
+
+                except Exception as e:
+                    st.error(f"❌ Ошибка: {e}")
+
+
+# ==================== ЧАТ-ВВОД ====================
+
+if user_input := st.chat_input("Напиши симптомы или задай вопрос..."):
+    if not API_KEY:
+        st.error("API-ключ не найден! Добавь OPENROUTER_API_KEY в Secrets (Settings → Secrets).")
+    else:
+        with st.chat_message("user"):
+            st.write(user_input)
+
+        vin_match = re.search(r'\b([A-HJ-NPR-Z0-9]{17})\b', user_input, re.IGNORECASE)
+        if vin_match and vin_match.group(1).upper() != st.session_state.vin_code:
+            st.session_state.vin_code = vin_match.group(1).upper()
+            save_profile(st.session_state.vin_code, st.session_state.is_base_trim, st.session_state.mods)
+            st.sidebar.info(f"📍 VIN обновлён: {st.session_state.vin_code}")
+
+        mods = st.session_state.mods
+        mods_list = []
+        if mods["tuned"]: mods_list.append("Чип-тюнинг")
+        if mods["decatted"]: mods_list.append("Кат удалён")
+        if mods["lpg"]: mods_list.append("ГБО")
+        mods_str = ", ".join(mods_list) if mods_list else "Сток"
+        vin_str = st.session_state.vin_code if st.session_state.vin_code else "Не указан"
+        base_str = "BASE" if st.session_state.is_base_trim else "Comfortline/Highline"
+
+        ai_text = f"[Контекст: VIN={vin_str}, Компл={base_str}, Моды={mods_str}] {user_input}"
+
+        st.session_state.chat_history.append({"role": "user", "content": [{"type": "text", "text": user_input}]})
+
+        temp_history = copy.deepcopy(st.session_state.chat_history)
+        temp_history[-1]["content"][0]["text"] = ai_text
+
+        with st.chat_message("assistant"):
+            with st.spinner("Думаю..."):
+                response = ask_ai_chat(API_KEY, MODEL_NAME, temp_history, max_tokens=1500)
+                st.write(response)
+
+        st.session_state.chat_history.append({"role": "assistant", "content": [{"type": "text", "text": response}]})
+        save_chat_history(st.session_state.chat_history)
+        st.rerun()

@@ -58,7 +58,8 @@ def _get_gsheet():
             "https://docs.google.com/spreadsheets/d/1ALFMvWYfjJsT_OeLWQRDXIzuvoA-8Xvn9CB5tm8qH1w/edit#gid=0"
         )
         return sheet.sheet1
-    except Exception:
+    except Exception as e:
+        st.error(f"❌ Ошибка подключения к Google Sheets: {e}")
         return None
 
 def save_history_to_disk(history, vin_code):

@@ -533,12 +533,15 @@ with st.sidebar:
         st.session_state.uploaded_image_key += 1
         clear_history_on_disk()
         st.rerun()
-
+       
         if st.button("🚪 Выйти"):
+        # Удаляем параметр auth из URL, если он есть
         if "auth" in st.query_params:
             st.query_params.clear()
+        # Очищаем историю чата, чтобы при следующем входе загрузить из облака
         if "chat_history" in st.session_state:
             del st.session_state.chat_history
+        # Сбрасываем флаг аутентификации
         st.session_state.authenticated = False
         st.rerun()
 

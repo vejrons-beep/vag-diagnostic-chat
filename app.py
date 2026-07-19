@@ -12,11 +12,13 @@ import copy
 from PIL import Image
 import numpy as np
 
+# Для работы с Google Sheets
+from streamlit_sheets_connection import SheetsConnection
+
 st.set_page_config(page_title="VAG Expert Chat + Vision", page_icon="🚗", layout="wide")
 
 MODEL_NAME = "google/gemini-2.5-flash"
 API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
-CACHE_FILE = "chat_history_cache.json"
 
 # --- ПРОВЕРКА ПИН-КОДА ---
 def check_password():
@@ -27,7 +29,7 @@ def check_password():
     if st.session_state.authenticated:
         return True
 
-    st.title("🔒")
+    st.title("🔒 Доступ ограничен")
     st.write("Введите пин-код для продолжения")
 
     with st.form("auth_form"):
@@ -46,31 +48,44 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- ПОСТОЯННАЯ ПАМЯТЬ ---
+# --- ИНИЦИАЛИЗАЦИЯ ПОДКЛЮЧЕНИЯ К GOOGLE SHEETS ---
+try:
+    conn = st.connection("gsheets", type=SheetsConnection)
+except Exception:
+    conn = None
+
+# --- НОВЫЕ ФУНКЦИИ ПАМЯТИ (ОБЛАЧНЫЕ) ---
 def save_history_to_disk(history, vin_code):
+    if conn is None:
+        return
     try:
-        data = {"vin_code": vin_code, "chat_history": history}
-        with open(CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except:
+        payload = json.dumps({"vin_code": vin_code, "chat_history": history}, ensure_ascii=False)
+        df = pd.DataFrame([{"data": payload}])
+        conn.update(worksheet="Sheet1", data=df)
+    except Exception:
         pass
 
 def load_history_from_disk():
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data.get("chat_history", []), data.get("vin_code", "")
-        except:
-            return [], ""
+    if conn is None:
+        return [], ""
+    try:
+        df = conn.read(worksheet="Sheet1", ttl=0)
+        if not df.empty and "data" in df.columns:
+            payload_str = df.iloc[0]["data"]
+            data = json.loads(payload_str)
+            return data.get("chat_history", []), data.get("vin_code", "")
+    except Exception:
+        return [], ""
     return [], ""
 
 def clear_history_on_disk():
-    if os.path.exists(CACHE_FILE):
-        try:
-            os.remove(CACHE_FILE)
-        except:
-            pass
+    if conn is None:
+        return
+    try:
+        df = pd.DataFrame([{"data": json.dumps({"vin_code": "", "chat_history": []})}])
+        conn.update(worksheet="Sheet1", data=df)
+    except Exception:
+        pass
 
 # --- ПАРСЕР VCDS ---
 @st.cache_data(show_spinner=False)

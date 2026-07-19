@@ -11,12 +11,13 @@ import os
 import copy
 from PIL import Image
 import numpy as np
+import gspread
+from google.oauth2.service_account import Credentials
 
 st.set_page_config(page_title="VAG Expert Chat + Vision", page_icon="🚗", layout="wide")
 
 MODEL_NAME = "google/gemini-2.5-flash"
 API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
-CACHE_FILE = "chat_history_cache.json"
 
 # --- ПРОВЕРКА ПИН-КОДА ---
 def check_password():
@@ -24,11 +25,14 @@ def check_password():
         st.session_state.authenticated = False
     if st.session_state.authenticated:
         return True
+
     st.title("🔒 Доступ ограничен")
     st.write("Введите пин-код для продолжения")
+
     with st.form("auth_form"):
         password = st.text_input("Пин-код", type="password")
         submit = st.form_submit_button("Войти")
+
         if submit:
             correct_password = st.secrets.get("APP_PASSWORD", os.environ.get("APP_PASSWORD", "1234"))
             if password == correct_password:
@@ -41,31 +45,53 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- ФУНКЦИИ ЛОКАЛЬНОГО ХРАНЕНИЯ ---
-def save_history_to_disk(history, vin_code):
+# --- ПОДКЛЮЧЕНИЕ К GOOGLE SHEETS (через base64-секрет) ---
+def _get_gsheet():
+    """Подключается к Google Sheets, читая ключ из base64-секрета."""
     try:
-        data = {"vin_code": vin_code, "chat_history": history}
-        with open(CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        b64_str = st.secrets["GSPREAD_SERVICE_ACCOUNT_BASE64"]
+        creds_json = base64.b64decode(b64_str).decode()
+        creds_dict = json.loads(creds_json)
+        creds = Credentials.from_service_account_info(creds_dict)
+        client = gspread.authorize(creds)
+        sheet = client.open_by_url(
+            "https://docs.google.com/spreadsheets/d/1ALFMvWYfjJsT_OeLWQRDXIzuvoA-8Xvn9CB5tm8qH1w/edit#gid=0"
+        )
+        return sheet.sheet1
+    except Exception:
+        return None
+
+def save_history_to_disk(history, vin_code):
+    sheet = _get_gsheet()
+    if sheet is None:
+        return
+    try:
+        payload = json.dumps({"vin_code": vin_code, "chat_history": history}, ensure_ascii=False)
+        sheet.update("A1", [[payload]])
     except Exception:
         pass
 
 def load_history_from_disk():
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data.get("chat_history", []), data.get("vin_code", "")
-        except Exception:
-            return [], ""
+    sheet = _get_gsheet()
+    if sheet is None:
+        return [], ""
+    try:
+        data_str = sheet.acell("A1").value
+        if data_str:
+            data = json.loads(data_str)
+            return data.get("chat_history", []), data.get("vin_code", "")
+    except Exception:
+        return [], ""
     return [], ""
 
 def clear_history_on_disk():
-    if os.path.exists(CACHE_FILE):
-        try:
-            os.remove(CACHE_FILE)
-        except Exception:
-            pass
+    sheet = _get_gsheet()
+    if sheet is None:
+        return
+    try:
+        sheet.update("A1", [[""]])
+    except Exception:
+        pass
 
 # --- ПАРСЕР VCDS ---
 @st.cache_data(show_spinner=False)
@@ -213,6 +239,7 @@ def generate_test_log_df(scenario="normal", diagnostic_mode="Механика (�
         })
         return df
 
+    # Механика
     rpm = 840 + np.random.normal(0, 8, n_points)
     map_base = 290.0 if is_base_trim else 305.0
     map_vals = map_base + np.random.normal(0, 5, n_points)

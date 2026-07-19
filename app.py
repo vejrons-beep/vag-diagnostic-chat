@@ -21,22 +21,30 @@ API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
 
 # --- ПРОВЕРКА ПИН-КОДА ---
 def check_password():
+    # Проверяем, есть ли авторизация в URL
+    query_params = st.query_params
+    if "auth" in query_params:
+        st.session_state.authenticated = True
+        st.query_params.clear()  # очищаем URL от параметра
+        return True
+
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
+
     if st.session_state.authenticated:
         return True
 
     st.title("🔒 Доступ ограничен")
     st.write("Введите пин-код для продолжения")
-
     with st.form("auth_form"):
         password = st.text_input("Пин-код", type="password")
         submit = st.form_submit_button("Войти")
-
         if submit:
             correct_password = st.secrets.get("APP_PASSWORD", os.environ.get("APP_PASSWORD", "1234"))
             if password == correct_password:
                 st.session_state.authenticated = True
+                # Добавляем параметр в URL, чтобы при перезагрузке авторизоваться автоматически
+                st.query_params["auth"] = "1"
                 st.rerun()
             else:
                 st.error("Неверный пин-код")
@@ -527,8 +535,12 @@ with st.sidebar:
         st.rerun()
 
     if st.button("🚪 Выйти"):
-        st.session_state.authenticated = False
-        st.rerun()
+    if "auth" in st.query_params:
+        st.query_params.clear()
+    if "chat_history" in st.session_state:
+        del st.session_state.chat_history
+    st.session_state.authenticated = False
+    st.rerun()
 
 # --- ОСНОВНОЙ ЭКРАН ---
 st.title("VAG Expert Chat + Vision 💬")

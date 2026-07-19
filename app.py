@@ -534,13 +534,13 @@ with st.sidebar:
         clear_history_on_disk()
         st.rerun()
 
-    if st.button("🚪 Выйти"):
-    if "auth" in st.query_params:
-        st.query_params.clear()
-    if "chat_history" in st.session_state:
-        del st.session_state.chat_history
-    st.session_state.authenticated = False
-    st.rerun()
+        if st.button("🚪 Выйти"):
+        if "auth" in st.query_params:
+            st.query_params.clear()
+        if "chat_history" in st.session_state:
+            del st.session_state.chat_history
+        st.session_state.authenticated = False
+        st.rerun()
 
 # --- ОСНОВНОЙ ЭКРАН ---
 st.title("VAG Expert Chat + Vision 💬")

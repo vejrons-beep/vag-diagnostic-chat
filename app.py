@@ -19,13 +19,13 @@ st.set_page_config(page_title="VAG Expert Chat + Vision", page_icon="🚗", layo
 MODEL_NAME = "google/gemini-2.5-flash"
 API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
 
-# --- ПРОВЕРКА ПИН-КОДА ---
+# --- ПРОВЕРКА ПИН-КОДА (с автоматическим входом через URL) ---
 def check_password():
     # 1. Проверяем, есть ли авторизация в URL
     query_params = st.query_params
     if "auth" in query_params:
         st.session_state.authenticated = True
-        st.query_params.clear()   # убираем параметр, чтобы не висел в адресной строке
+        st.query_params.clear()
         return True
 
     # 2. Если уже авторизованы в сессии – пропускаем
@@ -44,7 +44,7 @@ def check_password():
             correct_password = st.secrets.get("APP_PASSWORD", os.environ.get("APP_PASSWORD", "1234"))
             if password == correct_password:
                 st.session_state.authenticated = True
-                st.query_params["auth"] = "1"   # добавляем параметр в URL
+                st.query_params["auth"] = "1"
                 st.rerun()
             else:
                 st.error("Неверный пин-код")
@@ -55,7 +55,6 @@ if not check_password():
 
 # --- ПОДКЛЮЧЕНИЕ К GOOGLE SHEETS (через base64-секрет) ---
 def _get_gsheet():
-    """Подключается к Google Sheets, читая ключ из base64-секрета."""
     try:
         b64_str = st.secrets["GSPREAD_SERVICE_ACCOUNT_BASE64"]
         creds_json = base64.b64decode(b64_str).decode()
@@ -266,6 +265,7 @@ def generate_test_log_df(scenario="normal", diagnostic_mode="Механика (�
     misfire_c4 = np.zeros(n_points)
     g79 = np.ones(n_points) * 14.5
     g187 = np.ones(n_points) * 4.5
+    uoz = np.random.normal(6.0, 1.0, n_points)  # по умолчанию ХХ
 
     if scenario == "detonation":
         rpm = np.linspace(2000, 5600, n_points)
@@ -275,11 +275,13 @@ def generate_test_log_df(scenario="normal", diagnostic_mode="Механика (�
         ltft = np.ones(n_points) + 1.5
         g79 = np.linspace(14.5, 90.0, n_points)
         g187 = np.linspace(4.5, 88.0, n_points)
+        uoz = np.clip(np.linspace(15, 28, n_points) + np.random.normal(0, 2, n_points), 10, 35)
     elif scenario == "leak":
         map_vals = 385.0 + np.random.normal(0, 6, n_points)
         injector = 3.10 + np.random.normal(0, 0.04, n_points)
         stft = 15.2 + np.random.normal(0, 1.2, n_points)
         ltft = np.ones(n_points) + 6.5
+        uoz = np.random.normal(7.0, 1.5, n_points)
     elif scenario == "rich":
         map_vals = 300.0 + np.random.normal(0, 5, n_points)
         injector = 1.85 + np.random.normal(0, 0.03, n_points)
@@ -295,6 +297,7 @@ def generate_test_log_df(scenario="normal", diagnostic_mode="Механика (�
         g187 = np.linspace(4.5, 60.0, n_points)
         misfire_c1 = np.clip(np.cumsum(np.random.choice([0,1], p=[0.9,0.1], size=n_points)), 0, 10)
         misfire_c4 = np.clip(np.cumsum(np.random.choice([0,1], p=[0.9,0.1], size=n_points)), 0, 10)
+        uoz = np.clip(np.linspace(15, 30, n_points) + np.random.normal(0, 2, n_points), 10, 35)
     elif scenario == "misfire_coil":
         misfire_c2 = np.clip(np.cumsum(np.random.choice([0,1,2], p=[0.7,0.2,0.1], size=n_points)), 0, 45)
         stft = np.linspace(0, 12.0, n_points)
@@ -302,6 +305,7 @@ def generate_test_log_df(scenario="normal", diagnostic_mode="Механика (�
         rpm = np.concatenate([np.ones(50)*840, np.linspace(840, 2500, 50)])
         map_vals = np.concatenate([np.ones(50)*375.0, np.linspace(375.0, 500.0, 50)])
         misfire_c4 = np.concatenate([np.cumsum(np.random.choice([0,1], p=[0.5,0.5], size=50)), np.ones(50)*25])
+        uoz = np.concatenate([np.random.normal(6.0, 1.0, 50), np.clip(np.linspace(10, 20, 50), 5, 25)])
 
     df = pd.DataFrame({
         "Отметка Времени (сек)": time,
@@ -316,6 +320,7 @@ def generate_test_log_df(scenario="normal", diagnostic_mode="Механика (�
         "Пропуски Цилиндр 2": np.round(misfire_c2, 0),
         "Пропуски Цилиндр 3": np.round(misfire_c3, 0),
         "Пропуски Цилиндр 4": np.round(misfire_c4, 0),
+        "Угол опережения зажигания (°ПКВ)": np.round(uoz, 1)
     })
     return df
 
@@ -435,7 +440,8 @@ if "reference_map" not in st.session_state:
         "Время впрыска (мс)": (2.0, 3.0, "green", "red"),
         "Краткосрочная коррекция (%)": (-10.0, 10.0, "blue", "orange"),
         "Долговременная коррекция (%)": (-10.0, 10.0, "blue", "orange"),
-        "Пропуски": (0.0, 0.0, "green", "red")
+        "Пропуски": (0.0, 0.0, "green", "red"),
+        "Угол опережения зажигания (°ПКВ)": (15.0, 35.0, "green", "red")
     }
 if "generated_log_df" not in st.session_state:
     st.session_state.generated_log_df = None
@@ -602,7 +608,8 @@ if log_df is not None and not log_df.empty:
                 st.plotly_chart(fig, use_container_width=True)
         else:
             selected_cols = [c for c in log_df.columns if "Давление" in c or "коррекция" in c
-                             or "Пропуски" in c or "Откат" in c or "G187" in c or "G79" in c]
+                             or "Пропуски" in c or "Откат" in c or "G187" in c or "G79" in c
+                             or "Угол опережения" in c]
             if selected_cols:
                 fig = go.Figure()
                 for col in selected_cols:

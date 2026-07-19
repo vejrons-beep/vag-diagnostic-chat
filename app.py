@@ -12,30 +12,23 @@ import copy
 from PIL import Image
 import numpy as np
 
-# Для работы с Google Sheets
-from streamlit_sheets_connection import SheetsConnection
-
 st.set_page_config(page_title="VAG Expert Chat + Vision", page_icon="🚗", layout="wide")
 
 MODEL_NAME = "google/gemini-2.5-flash"
 API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
+CACHE_FILE = "chat_history_cache.json"
 
 # --- ПРОВЕРКА ПИН-КОДА ---
 def check_password():
-    """Возвращает True, если пароль верен или уже были авторизованы."""
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
-
     if st.session_state.authenticated:
         return True
-
     st.title("🔒 Доступ ограничен")
     st.write("Введите пин-код для продолжения")
-
     with st.form("auth_form"):
         password = st.text_input("Пин-код", type="password")
         submit = st.form_submit_button("Войти")
-
         if submit:
             correct_password = st.secrets.get("APP_PASSWORD", os.environ.get("APP_PASSWORD", "1234"))
             if password == correct_password:
@@ -48,44 +41,31 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- ИНИЦИАЛИЗАЦИЯ ПОДКЛЮЧЕНИЯ К GOOGLE SHEETS ---
-try:
-    conn = st.connection("gsheets", type=SheetsConnection)
-except Exception:
-    conn = None
-
-# --- НОВЫЕ ФУНКЦИИ ПАМЯТИ (ОБЛАЧНЫЕ) ---
+# --- ФУНКЦИИ ЛОКАЛЬНОГО ХРАНЕНИЯ ---
 def save_history_to_disk(history, vin_code):
-    if conn is None:
-        return
     try:
-        payload = json.dumps({"vin_code": vin_code, "chat_history": history}, ensure_ascii=False)
-        df = pd.DataFrame([{"data": payload}])
-        conn.update(worksheet="Sheet1", data=df)
+        data = {"vin_code": vin_code, "chat_history": history}
+        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
 
 def load_history_from_disk():
-    if conn is None:
-        return [], ""
-    try:
-        df = conn.read(worksheet="Sheet1", ttl=0)
-        if not df.empty and "data" in df.columns:
-            payload_str = df.iloc[0]["data"]
-            data = json.loads(payload_str)
-            return data.get("chat_history", []), data.get("vin_code", "")
-    except Exception:
-        return [], ""
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("chat_history", []), data.get("vin_code", "")
+        except Exception:
+            return [], ""
     return [], ""
 
 def clear_history_on_disk():
-    if conn is None:
-        return
-    try:
-        df = pd.DataFrame([{"data": json.dumps({"vin_code": "", "chat_history": []})}])
-        conn.update(worksheet="Sheet1", data=df)
-    except Exception:
-        pass
+    if os.path.exists(CACHE_FILE):
+        try:
+            os.remove(CACHE_FILE)
+        except Exception:
+            pass
 
 # --- ПАРСЕР VCDS ---
 @st.cache_data(show_spinner=False)
@@ -233,7 +213,6 @@ def generate_test_log_df(scenario="normal", diagnostic_mode="Механика (�
         })
         return df
 
-    # Механика
     rpm = 840 + np.random.normal(0, 8, n_points)
     map_base = 290.0 if is_base_trim else 305.0
     map_vals = map_base + np.random.normal(0, 5, n_points)
@@ -514,9 +493,7 @@ with st.sidebar:
         clear_history_on_disk()
         st.rerun()
 
-    # Кнопка выхода (не очищает историю)
     if st.button("🚪 Выйти"):
-        # Сбрасываем только авторизацию, история остаётся
         st.session_state.authenticated = False
         st.rerun()
 

@@ -21,19 +21,20 @@ API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
 
 # --- ПРОВЕРКА ПИН-КОДА ---
 def check_password():
-    # Проверяем, есть ли авторизация в URL
+    # 1. Проверяем, есть ли авторизация в URL
     query_params = st.query_params
     if "auth" in query_params:
         st.session_state.authenticated = True
-        st.query_params.clear()  # очищаем URL от параметра
+        st.query_params.clear()   # убираем параметр, чтобы не висел в адресной строке
         return True
 
+    # 2. Если уже авторизованы в сессии – пропускаем
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
-
     if st.session_state.authenticated:
         return True
 
+    # 3. Иначе показываем форму входа
     st.title("🔒 Доступ ограничен")
     st.write("Введите пин-код для продолжения")
     with st.form("auth_form"):
@@ -43,8 +44,7 @@ def check_password():
             correct_password = st.secrets.get("APP_PASSWORD", os.environ.get("APP_PASSWORD", "1234"))
             if password == correct_password:
                 st.session_state.authenticated = True
-                # Добавляем параметр в URL, чтобы при перезагрузке авторизоваться автоматически
-                st.query_params["auth"] = "1"
+                st.query_params["auth"] = "1"   # добавляем параметр в URL
                 st.rerun()
             else:
                 st.error("Неверный пин-код")

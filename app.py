@@ -796,6 +796,158 @@ if image_base64 is not None:
             st.session_state.uploaded_image_key += 1
             st.rerun()
 
+# ============================================================
+# АУДИО/ВИДЕО ДИАГНОСТИКА МОТОРА
+# ============================================================
+st.markdown("---")
+st.subheader("🎙️ Аудио/Видео диагностика мотора")
+
+audio_file = st.file_uploader(
+    "Загрузите видео или аудио записи работы мотора",
+    type=["mp4", "avi", "mov", "mkv", "wav", "mp3", "m4a", "ogg"],
+    key="audio_diagnosis_uploader"
+)
+
+if audio_file is not None:
+    col1, col2 = st.columns(2)
+    with col1:
+        st.audio(audio_file)
+    with col2:
+        audio_temp = st.radio(
+            "Температура мотора при записи:",
+            ["Холодный", "Прогретый", "Горячий"],
+            index=1,
+            key="engine_temp_audio"
+        )
+        temp_map = {"Холодный": "cold", "Прогретый": "warm", "Горячий": "hot"}
+        
+        # RPM из лога если есть, иначе дефолт 840
+        rpm_default = 840.0
+        if log_df is not None and not log_df.empty:
+            rpm_col = [c for c in log_df.columns if "Обороты" in c or "RPM" in c.upper()]
+            if rpm_col:
+                rpm_default = float(log_df[rpm_col[0]].mean())
+        
+        rpm_input = st.number_input(
+            "Обороты двигателя (об/мин):",
+            value=rpm_default,
+            min_value=0.0,
+            max_value=8000.0,
+            step=10.0,
+            key="audio_rpm_input"
+        )
+    
+    if st.button("🔊 Запустить акустический анализ", key="run_audio_analysis"):
+        with st.spinner("Анализирую звук... Это может занять 10-20 секунд"):
+            try:
+                from audio_engine_diagnosis import analyze_engine_audio
+                
+                result = analyze_engine_audio(
+                    audio_file,
+                    rpm=rpm_input,
+                    engine_temp=temp_map[audio_temp],
+                    has_lpg=st.session_state.mods.get("lpg", False)
+                )
+                
+                if not result["success"]:
+                    st.error(f"❌ Ошибка анализа: {result['error']}")
+                else:
+                    st.success("✅ Акустический анализ завершён")
+                    
+                    # Спектрограмма
+                    if result.get("spectrogram_path") and os.path.exists(result["spectrogram_path"]):
+                        st.image(
+                            result["spectrogram_path"],
+                            caption="Спектрограмма звука мотора CFNA",
+                            use_container_width=True
+                        )
+                    
+                    # Спектр-плот
+                    if result.get("spectrum_plot_path") and os.path.exists(result["spectrum_plot_path"]):
+                        st.image(
+                            result["spectrum_plot_path"],
+                            caption="Доминирующие частоты",
+                            use_container_width=True
+                        )
+                    
+                    # Локальные результаты
+                    st.subheader("📊 Локальный анализ")
+                    
+                    with st.expander("Сырые акустические признаки"):
+                        if result.get("raw_features"):
+                            for k, v in result["raw_features"].items():
+                                if isinstance(v, float):
+                                    st.write(f"**{k}:** {v:.4f}")
+                                else:
+                                    st.write(f"**{k}:** {v}")
+                    
+                    if result.get("sound_scores"):
+                        st.write("**Обнаруженные паттерны:**")
+                        for s in result["sound_scores"][:5]:
+                            urgency_emoji = {
+                                "Низкая": "🟢", "Средняя": "🟡",
+                                "Высокая": "🔴", "Критическая": "🆘"
+                            }
+                            emoji = urgency_emoji.get(s["urgency"].split(" — ")[0], "⚪")
+                            
+                            with st.container():
+                                st.write(f"{emoji} **{s['name']}** — уверенность {s['confidence']*100:.0f}%")
+                                st.caption(f"Диапазон: {s['freq_range']} | Срочность: {s['urgency']}")
+                                if s.get("vcds_groups"):
+                                    st.caption(f"Проверить VCDS группы: {', '.join(s['vcds_groups'])}")
+                                st.caption(f"Рекомендация: {s['typical_fix']}")
+                    else:
+                        st.info("Локальный анализ не выявил характерных паттернов. Звук в пределах нормы или требует экспертной оценки.")
+                    
+                    # Отправка в Gemini
+                    st.subheader("🤖 Экспертный анализ Gemini")
+                    
+                    if st.button("👁️ Отправить спектрограмму в Gemini", key="send_audio_to_gemini"):
+                        if not API_KEY:
+                            st.error("API-ключ не найден!")
+                        else:
+                            with open(result["spectrogram_path"], "rb") as img_f:
+                                img_b64 = base64.b64encode(img_f.read()).decode()
+                            img_data = f"data:image/png;base64,{img_b64}"
+                            
+                            # Формируем system prompt с аудио-контекстом
+                            sys_prompt = get_system_prompt(
+                                st.session_state.diagnostic_mode,
+                                st.session_state.is_base_trim,
+                                mods=st.session_state.mods
+                            )
+                            sys_prompt += "\n\nДополнительно: ты анализируешь спектрограмму звука мотора CFNA. Ищи импульсные пики на гармониках оборотов — это механические стуки (цепь, клапаны, пальцы). Постоянный гармонический гул — навесное оборудование (помпа, генератор, ролики). Учитывай температуру мотора и наличие ГБО."
+                            
+                            messages = [
+                                {"role": "system", "content": [{"type": "text", "text": sys_prompt}]},
+                                {"role": "user", "content": [
+                                    {"type": "text", "text": result["prompt_for_gemini"]},
+                                    {"type": "image_url", "image_url": {"url": img_data}}
+                                ]}
+                            ]
+                            
+                            with st.spinner("Gemini анализирует спектрограмму..."):
+                                gemini_resp = ask_ai_chat(API_KEY, MODEL_NAME, messages, max_tokens=2500)
+                            
+                            st.markdown(gemini_resp)
+                            
+                            # Сохраняем в историю чата
+                            st.session_state.chat_history.append({
+                                "role": "user",
+                                "content": [{"type": "text", "text": f"[Аудио-диагностика] {audio_file.name} | RPM: {rpm_input:.0f} | Темп: {audio_temp}"}]
+                            })
+                            st.session_state.chat_history.append({
+                                "role": "assistant",
+                                "content": [{"type": "text", "text": gemini_resp}]
+                            })
+                            save_chat_history(st.session_state.chat_history)
+                            
+            except ImportError as e:
+                st.error(f"❌ Не установлены зависимости: {e}")
+                st.info("Установите: pip install librosa soundfile scipy matplotlib")
+            except Exception as e:
+                st.error(f"❌ Ошибка: {e}")
+
 # --- ЧАТ-ВВОД ---
 if user_input := st.chat_input("Напишите симптомы или задайте вопрос..."):
     if not API_KEY:

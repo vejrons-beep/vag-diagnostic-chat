@@ -451,7 +451,7 @@ def generate_test_log_df(scenario="normal", diagnostic_mode="Механика (�
     return df
 
 # --- ДИНАМИЧЕСКИЙ СИСТЕМНЫЙ ПРОМПТ ---
-def get_system_prompt(mode="Механика (Группы 001-063)", is_base_trim=False, ecu_type="Magneti Marelli 7GV", mods=None):
+def get_system_prompt(mode="Механика (Группы 001-134)", is_base_trim=False, ecu_type="Magneti Marelli 7GV", mods=None):
     if mods is None:
         mods = {"tuned": False, "decatted": False, "lpg": False}
 
@@ -600,7 +600,7 @@ if "is_base_trim" not in st.session_state:
 if "mods" not in st.session_state:
     st.session_state.mods = profile.get("mods", {"tuned": False, "decatted": False, "lpg": False})
 if "diagnostic_mode" not in st.session_state:
-    st.session_state.diagnostic_mode = "Механика (Группы 001-063)"
+    st.session_state.diagnostic_mode = "Механика (Группы 001-134)"
 
 if "chat_history" not in st.session_state:
     if saved_history:
@@ -679,7 +679,7 @@ with st.sidebar:
     prev_mode = st.session_state.diagnostic_mode
     st.session_state.diagnostic_mode = st.radio(
         "Выберите контур проверки:",
-        ["Механика (Группы 001-063)", "Электрика и CAN (Группы 125-135)"],
+        ["Механика (Группы 001-134)", "Электрика и CAN (Группы 125-135)"],
         index=0 if st.session_state.diagnostic_mode.startswith("Механика") else 1
     )
     if prev_mode != st.session_state.diagnostic_mode and len(st.session_state.chat_history) > 0:
